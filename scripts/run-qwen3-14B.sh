@@ -48,7 +48,7 @@ ROLLOUT_ARGS=(
    --num-rollout 3000
    --rollout-batch-size 2
    --n-samples-per-prompt 8
-   --rollout-max-response-len 4096
+   --rollout-max-response-len 4000
    --rollout-temperature 0.8
 
    --global-batch-size 16
@@ -65,10 +65,11 @@ ROLLOUT_ARGS=(
 # )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 4
+   --tensor-model-parallel-size 1
    --sequence-parallel
-   --pipeline-model-parallel-size 2
-   # --context-parallel-size 1
+   --pipeline-model-parallel-size 4
+
+   # --context-parallel-size [1
    # --expert-model-parallel-size 1
    # --expert-tensor-parallel-size 1
 
@@ -79,12 +80,12 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 6144
+   --max-tokens-per-gpu 4096
 )
 
 GRPO_ARGS=(
    --advantage-estimator grpo
-   --use-kl-loss
+   # --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
    --kl-coef 0.00
@@ -111,7 +112,7 @@ WANDB_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.5
+   --sglang-mem-fraction-static 0.7
 )
 
 MISC_ARGS=(
@@ -124,14 +125,14 @@ MISC_ARGS=(
    # need to comment this when using model with MLA
    --attention-backend flash
    # reduce the memory usage
-   --optimizer-cpu-offload
-   --overlap-cpu-optimizer-d2h-h2d
-   --use-precision-aware-optimizer
+   # --optimizer-cpu-offload
+   # --overlap-cpu-optimizer-d2h-h2d
+   # --use-precision-aware-optimizer
 )
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
@@ -146,7 +147,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node 4 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
@@ -156,6 +157,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${DISTRIBUTED_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
-   # ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} 
+   # ${EVAL_ARGS[@]} \

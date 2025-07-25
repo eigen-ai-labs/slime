@@ -9,14 +9,13 @@ pkill -9 python
 sleep 3
 pkill -9 ray
 pkill -9 python
-pkill -9 redis
 
 set -ex
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
+NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
     HAS_NVLINK=1
 else
@@ -25,24 +24,29 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+export WANDB_KEY=44eba75898c6a091a64aada6ea2ae738efe1f4fb
+DATA_DIR="/workspace/data"
+MODEL_DIR="/workspace/models"
 source "${SCRIPT_DIR}/models/qwen3-30B-A3B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-30B-A3B
+   --hf-checkpoint ${MODEL_DIR}/Qwen3-30B-A3B
    #--hf-checkpoint /root/Qwen3-30B-A3B-FP8
-   --ref-load /root/Qwen3-30B-A3B_torch_dist
-   --load /root/Qwen3-30B-A3B_slime/
-   --save /root/Qwen3-30B-A3B_slime/
+   --ref-load ${MODEL_DIR}/Qwen3-30B-A3B_torch_dist
+   --load ${MODEL_DIR}/Qwen3-30B-A3B_slime/
+   --save ${MODEL_DIR}/Qwen3-30B-A3B_slime/
    --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data ${DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
    --rollout-shuffle
+
    --rm-type deepscaler
+
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
@@ -55,7 +59,7 @@ ROLLOUT_ARGS=(
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
+   --eval-prompt-data aime ${DATA_DIR}/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 0.7
@@ -80,9 +84,10 @@ PERF_ARGS=(
 
 GRPO_ARGS=(
    --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
+   # --use-kl-loss
+   # --kl-loss-coef 0.00
+   # --kl-loss-type low_var_kl
+   # --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
@@ -102,15 +107,15 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   #--use-wandb
-   # --wandb-project slime-dev
-   # --wandb-group qwen3-30B-A3B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project slime-dev
+   --wandb-group qwen3-4B-test
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.5
    --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
 )
 
@@ -127,7 +132,7 @@ MISC_ARGS=(
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
@@ -149,8 +154,9 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${GRPO_ARGS[@]} \
+   ${DISTRIBUTED_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
-   ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   ${EVAL_ARGS[@]} \

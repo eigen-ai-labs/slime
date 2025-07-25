@@ -49,6 +49,7 @@ SFT_ARGS=(
    --debug-train-only
 )
 
+# tp:pp: 1,8 / 2,4
 PERF_ARGS=(
    --tensor-model-parallel-size 1
    --sequence-parallel

@@ -46,12 +46,16 @@ ROLLOUT_ARGS=(
    --rollout-shuffle
    --rm-type deepscaler
    --num-rollout 3000
-   --rollout-batch-size 4
+   --rollout-batch-size 32
    --n-samples-per-prompt 8
-   --rollout-max-response-len 512
+   --rollout-max-response-len 8192
    --rollout-temperature 0.8
 
-   --global-batch-size 32
+   --over-sampling-batch-size 32
+   --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+   #--partial-rollout
+
+   --global-batch-size 256
    --balance-data
 )
 
@@ -67,7 +71,7 @@ ROLLOUT_ARGS=(
 PERF_ARGS=(
    --tensor-model-parallel-size 2
    --sequence-parallel
-   --pipeline-model-parallel-size 2
+   --pipeline-model-parallel-size 1
    # --context-parallel-size 1
    # --expert-model-parallel-size 1
    # --expert-tensor-parallel-size 1
@@ -79,7 +83,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 1024
+   --max-tokens-per-gpu 9216
 )
 
 GRPO_ARGS=(
@@ -110,8 +114,9 @@ WANDB_ARGS=(
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.5
+   --rollout-num-gpus-per-engine 2
+   --sglang-mem-fraction-static 0.7
+   --sglang-server-concurrency 128
 )
 
 MISC_ARGS=(
@@ -124,9 +129,9 @@ MISC_ARGS=(
    # need to comment this when using model with MLA
    --attention-backend flash
    # reduce the memory usage
-   --optimizer-cpu-offload
-   --overlap-cpu-optimizer-d2h-h2d
-   --use-precision-aware-optimizer
+   # --optimizer-cpu-offload
+   # --overlap-cpu-optimizer-d2h-h2d
+   # --use-precision-aware-optimizer
 )
 
 # launch the master node of ray in container
@@ -156,6 +161,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${DISTRIBUTED_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
-   # ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   # ${EVAL_ARGS[@]} \
