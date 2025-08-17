@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # for rerun the task
+
 pkill -9 sglang
 sleep 3
 ray stop --force
@@ -25,21 +26,24 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-32B.sh"
+MODEL_DIR="/workspace/models"
+DATA_DIR="/workspace/data"
+DATA_NAME="merged_file_distractor_toolace_ticketapi_tradingbot_filemt_v1_no_think"
 
 CKPT_ARGS=(
-   --hf-checkpoint /workspace/models/Qwen3-32B
-   --ref-load /workspace/models/Qwen3-32B_torch_dist
-   --load  /workspace/models/Qwen3-32B_bfcl/
-   --save  /workspace/models/Qwen3-32B_bfcl/
-   --save-interval 200
+   --hf-checkpoint ${MODEL_DIR}/Qwen3-32B
+   --ref-load ${MODEL_DIR}/Qwen3-32B_torch_dist
+   --load ${MODEL_DIR}/Qwen3-32B_bfcl_${DATA_NAME}_16k/
+   --save ${MODEL_DIR}/Qwen3-32B_bfcl_${DATA_NAME}_16k/
+   --save-interval 100
 )
 
 SFT_ARGS=(
    --rollout-function-path slime.rollout.sft_example.generate_rollout
-   --prompt-data /workspace/data/function_calling/merged_function_calling_15510_file_toolace_harder.parquet
+   --prompt-data ${DATA_DIR}/function_calling/${DATA_NAME}.parquet
    --input-key messages
    --rollout-shuffle
-   --num-epoch 10
+   --num-epoch 5
    --rollout-batch-size 128
    --global-batch-size 128
 
@@ -64,13 +68,13 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 16384
 )
 
 OPTIMIZER_ARGS=(
    --optimizer adam
    --lr 1e-5
-   --lr-warmup-iters 128
+   --lr-warmup-iters 100
    --lr-decay-style cosine
    --min-lr 1e-6
    --lr-warmup-fraction 0.9
@@ -82,8 +86,8 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    --use-wandb
    --wandb-project slime-bfcl
-   --wandb-group qwen3-32B-base-sft
-   --wandb-key fd88104f501d04b577045e53389825bba3f28783
+   --wandb-group qwen3-32B-sft-BFCL-${DATA_NAME}-16k
+   --wandb-key 44eba75898c6a091a64aada6ea2ae738efe1f4fb
 )
 
 MISC_ARGS=(
