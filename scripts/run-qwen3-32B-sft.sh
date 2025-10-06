@@ -28,7 +28,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-32B.sh"
 MODEL_DIR="/workspace/models"
 DATA_DIR="/workspace/data"
-DATA_NAME="merged_file_distractor_toolace_ticketapi_tradingbot_filemt_v1_no_think"
+DATA_NAME="merged_distractor_toolace_ticketapi_tradingbot_filemt_v1_w_clarification_100_no_think"
 
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_DIR}/Qwen3-32B
@@ -39,7 +39,7 @@ CKPT_ARGS=(
 )
 
 SFT_ARGS=(
-   --rollout-function-path slime.rollout.sft_example.generate_rollout
+   --rollout-function-path slime.rollout.sft_rollout.generate_rollout
    --prompt-data ${DATA_DIR}/function_calling/${DATA_NAME}.parquet
    --input-key messages
    --rollout-shuffle
