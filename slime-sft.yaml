@@ -1,0 +1,294 @@
+name: slime-sft
+
+resources:
+  accelerators: {H200:8, H100:8}
+  image_id: docker:slimerl/slime:latest
+  infra: k8s
+  ports:
+    - 8280  # Ray dashboard port
+
+secrets:
+  WANDB_API_KEY: ""
+  HF_TOKEN: ""
+
+file_mounts:
+  /ckpt:
+    source: s3://eigen-train-skypilot
+    mode: MOUNT
+
+envs:
+  MODEL_PATH: "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+setup: |
+  pwd
+  ls -lh
+  # 路径可根据实际情况调整
+  cd /root/
+  git clone https://github.com/THUDM/slime.git
+  cd slime
+  pip install -e .
+
+  # Pin huggingface-hub to compatible version for transformers
+  pip install 'huggingface_hub>=0.34.0,<1.0'
+
+  # 下载训练数据集 (tau_airline)
+  mkdir -p /root/tau_airline_data
+  wget -O /root/tau_airline_data/tau_airline_hermes_format_with_sp_sft.jsonl \
+    https://huggingface.co/datasets/yentinglin/tau_airline_sft/resolve/main/tau_airline_hermes_format_with_sp_sft.jsonl
+
+run: |
+  set -ex
+  set -euo pipefail
+
+  # Change to /root where slime is installed
+  cd /root
+
+  # for rerun the task - DON'T kill ray, it breaks SkyPilot controller
+  pkill -9 sglang || true
+  sleep 2
+
+  echo "[info] cleanup done."
+  # will prevent ray from buffering stdout/stderr
+  export PYTHONBUFFERED=16
+
+  # Configure Ray object store memory
+  export RAY_object_store_memory=50000000000
+
+  NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
+  if [ "$NVLINK_COUNT" -gt 0 ]; then
+      HAS_NVLINK=1
+  else
+      HAS_NVLINK=0
+  fi
+  echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
+
+  # Model configuration - change this to Qwen/Qwen3-4B if using 4B model
+  MODEL_SHORT=$(basename "$MODEL_PATH")
+  NUM_GPUS="${NUM_GPUS:-8}"       # change if you have different number of GPUs
+
+  echo "[info] Selected model: ${MODEL_SHORT}"
+
+  if [[ "$MODEL_SHORT" == "Qwen3-8B" ]]; then
+      echo "[info] Using 8B model config"
+      source "slime/scripts/models/qwen3-8B.sh"
+  elif [[ "$MODEL_SHORT" == "Qwen3-4B" ]]; then
+      echo "[info] Using 4B model config"
+      source "slime/scripts/models/qwen3-4B.sh"
+  elif [[ "$MODEL_SHORT" == "Qwen3-30B-A3B-Instruct-2507" ]]; then
+      echo "[info] Using 30B model config"
+      sed -i 's/--rotary-base 1000000/--rotary-base 10000000/g' slime/scripts/models/qwen3-30B-A3B.sh
+      source "slime/scripts/models/qwen3-30B-A3B.sh"
+  else
+      echo "[error] Unsupported model: ${MODEL_SHORT}"
+      echo "Usage: Set MODEL_PATH to Qwen/Qwen3-4B or Qwen/Qwen3-8B"
+      exit 1
+  fi
+
+  # ------------------------
+  # weight Hugging Face ->  Megatron
+  # ------------------------
+
+  TARGET_DIR="/root/${MODEL_SHORT}_torch_dist"
+  HF_CHECKPOINT="/root/${MODEL_SHORT}"
+  huggingface-cli download "${MODEL_PATH}" --local-dir "${HF_CHECKPOINT}"
+  echo "[info] Using HF checkpoint: $HF_CHECKPOINT"
+
+  if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
+    echo "[info] Checkpoint directory already exists and is not empty: $TARGET_DIR"
+    echo "[info] Skipping HF -> torch_dist conversion."
+  else
+    echo "[info] Starting HF -> torch_dist conversion..."
+    # PYTHONPATH=/root/Megatron-LM python slime/tools/convert_hf_to_torch_dist.py \
+    PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 slime/tools/convert_hf_to_torch_dist.py \
+        ${MODEL_ARGS[@]} \
+        --hf-checkpoint "${HF_CHECKPOINT}" \
+        --save "$TARGET_DIR"
+  fi
+
+  # ------------------------
+  # Build output & wandb names
+  # ------------------------
+
+  SCRIPT_DIR="/root"
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  OUTPUT_DIR="/ckpt/outputs/${MODEL_SHORT}_${TIMESTAMP}"
+
+  # ------------------------
+  # CKPT / SFT / Perf / Optimizer args
+  # ------------------------
+  CKPT_ARGS=(
+    --hf-checkpoint "$HF_CHECKPOINT"
+    --ref-load "${TARGET_DIR}"
+    --load "${OUTPUT_DIR}"
+    --save "${OUTPUT_DIR}"
+    # --save-interval 20
+    --save-interval 50
+  )
+
+  # dataset path
+  DATA_PATH="/root/tau_airline_data/tau_airline_hermes_format_with_sp_sft.jsonl"
+  SFT_ARGS=(
+    --rollout-function-path slime.rollout.sft_rollout.generate_rollout
+    --prompt-data "${DATA_PATH}"
+    --input-key messages
+    --rollout-shuffle
+    --num-epoch 3   # not work for sft
+
+    # error without these 6 parameters
+    --num-rollout 1000   # training steps
+    --n-samples-per-prompt 1
+    --num-steps-per-rollout 1
+    # sft not use
+    --rollout-num-gpus 8
+    --rollout-num-gpus-per-engine 2
+    --sglang-server-concurrency 1
+
+    --rollout-batch-size 128
+    --global-batch-size 128
+
+    --loss-type sft_loss
+    --calculate-per-token-loss
+    --disable-compute-advantages-and-returns
+    --debug-train-only
+  )
+
+  PERF_ARGS=(
+    --tensor-model-parallel-size 4
+    --sequence-parallel
+    --pipeline-model-parallel-size 1
+    --context-parallel-size 1
+    --expert-model-parallel-size 8
+    --expert-tensor-parallel-size 1
+
+    --recompute-granularity full
+    --recompute-method uniform
+    --recompute-num-layers 1
+
+    # --micro-batch-size 1
+    --use-dynamic-batch-size
+    --max-tokens-per-gpu 20480
+  )
+
+  OPTIMIZER_ARGS=(
+    --optimizer adam
+    --lr 1e-5
+    --lr-warmup-iters 128
+    --lr-decay-style constant
+    --min-lr 1e-6
+    --lr-warmup-fraction 0.9
+    --weight-decay 0.1
+    --adam-beta1 0.9
+    --adam-beta2 0.98
+
+    --optimizer-cpu-offload
+    --overlap-cpu-optimizer-d2h-h2d
+    --use-precision-aware-optimizer
+  )
+
+  # wandb
+  WANDB_ARGS=(
+     --use-wandb
+     --wandb-project "Eigen-Train-Slime"
+     --wandb-group "${MODEL_SHORT}_slime_${TIMESTAMP}"
+     --wandb-key "${WANDB_API_KEY}"
+  )
+
+
+  MISC_ARGS=(
+    --attention-dropout 0.0
+    --hidden-dropout 0.0
+    --accumulate-allreduce-grads-in-fp32
+    --attention-softmax-in-fp32
+    --attention-backend flash
+  )
+
+  # ------------------------
+  # Start Ray (head) — Use separate Ray cluster from SkyPilot
+  # IMPORTANT: Do NOT use ray stop --force as it kills SkyPilot's Ray
+  # ------------------------
+
+  echo "[info] stopping SLIME-specific ray instance (on port 8265)..."
+  ray stop --address='127.0.0.1:8265' 2>/dev/null || true
+  sleep 2
+
+  echo "[info] starting ray (head) with GCS on port 8265, dashboard on port 8266 ..."
+
+  head_ip=$(echo "$SKYPILOT_NODE_IPS" | head -n1)
+  # Ray cluster configuration
+  HEAD_PORT=6385
+  DASH_PORT=8280
+  ray start --head --node-ip-address="$head_ip" \
+    --port $HEAD_PORT --dashboard-port $DASH_PORT \
+    --dashboard-host=0.0.0.0 \
+    --dashboard-agent-listen-port=52366 \
+    --disable-usage-stats \
+    --num-gpus=$SKYPILOT_NUM_GPUS_PER_NODE
+
+  export RAY_ADDRESS="http://localhost:$DASH_PORT"
+  sleep 10  # Wait for Ray to fully initialize
+
+  # ------------------------
+  # runtime env for ray job: ensure Megatron & Slime in PYTHONPATH
+  # ------------------------
+  RUNTIME_ENV_JSON="{
+    \"env_vars\": {
+      \"PYTHONPATH\": \"/root/Megatron-LM/\",
+      \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+      \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    }
+  }"
+
+  # ------------------------
+  # Submit the job to custom Ray cluster
+  # ------------------------
+  echo "[info] submitting ray job to custom cluster (dashboard port 8266)..."
+  ray job submit --address="$RAY_ADDRESS" \
+    --runtime-env-json="${RUNTIME_ENV_JSON}" \
+    -- python3 slime/train_async.py \
+    --actor-num-nodes 1 \
+    --actor-num-gpus-per-node "${NUM_GPUS}" \
+    "${MODEL_ARGS[@]:-}" \
+    "${CKPT_ARGS[@]}" \
+    "${SFT_ARGS[@]}" \
+    "${OPTIMIZER_ARGS[@]}" \
+    "${PERF_ARGS[@]}" \
+    "${WANDB_ARGS[@]}" \
+    "${MISC_ARGS[@]}"
+
+  echo "[info] Outputs saved to: ${OUTPUT_DIR}"
+
+  # ------------------------
+  # Wait for training to complete and convert to HuggingFace format
+  # ------------------------
+
+  echo "[info] Training completed. Starting conversion to HuggingFace format..."
+
+  # Find the latest checkpoint (highest iteration number)
+  LATEST_CKPT=$(ls -d "${OUTPUT_DIR}"/iter_* 2>/dev/null | sort -V | tail -1)
+
+  if [ -z "$LATEST_CKPT" ]; then
+    echo "[warning] No checkpoint found in ${OUTPUT_DIR}"
+    echo "[warning] Skipping HuggingFace conversion"
+    exit 0
+  fi
+
+  CKPT_NAME=$(basename "$LATEST_CKPT")
+  echo "[info] Found latest checkpoint: ${CKPT_NAME}"
+
+  # Set output directory for HuggingFace format
+  HF_OUTPUT_DIR="${OUTPUT_DIR}/${MODEL_SHORT}_slime_hf"
+
+  echo "[info] Converting ${CKPT_NAME} to HuggingFace format..."
+  PYTHONPATH=/root/Megatron-LM python slime/tools/convert_torch_dist_to_hf.py \
+      --input-dir "${LATEST_CKPT}" \
+      --output-dir "${HF_OUTPUT_DIR}" \
+      --origin-hf-dir "${HF_CHECKPOINT}" \
+      --vocab-size 151936
+
+  if [ $? -eq 0 ]; then
+    echo "[info] Successfully converted to HuggingFace format"
+    echo "[info] HuggingFace model saved to: ${HF_OUTPUT_DIR}"
+  else
+    echo "[error] Failed to convert to HuggingFace format"
+    exit 1
+  fi
