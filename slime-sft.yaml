@@ -2,7 +2,7 @@ name: slime-sft
 
 resources:
   accelerators: {H200:8, H100:8}
-  image_id: docker:slimerl/slime:latest
+  image_id: docker:slimerl/slime:20251022-v3
   infra: k8s
   ports:
     - 8280  # Ray dashboard port
@@ -24,7 +24,7 @@ setup: |
   ls -lh
   # 路径可根据实际情况调整
   cd /root/
-  git clone https://github.com/THUDM/slime.git
+  git clone https://github.com/eigen-ai-labs/slime
   cd slime
   pip install -e .
 
@@ -64,7 +64,6 @@ run: |
 
   # Model configuration - change this to Qwen/Qwen3-4B if using 4B model
   MODEL_SHORT=$(basename "$MODEL_PATH")
-  NUM_GPUS="${NUM_GPUS:-8}"       # change if you have different number of GPUs
 
   echo "[info] Selected model: ${MODEL_SHORT}"
 
@@ -121,7 +120,6 @@ run: |
     --ref-load "${TARGET_DIR}"
     --load "${OUTPUT_DIR}"
     --save "${OUTPUT_DIR}"
-    # --save-interval 20
     --save-interval 50
   )
 
@@ -132,17 +130,7 @@ run: |
     --prompt-data "${DATA_PATH}"
     --input-key messages
     --rollout-shuffle
-    --num-epoch 3   # not work for sft
-
-    # error without these 6 parameters
-    --num-rollout 1000   # training steps
-    --n-samples-per-prompt 1
-    --num-steps-per-rollout 1
-    # sft not use
-    --rollout-num-gpus 8
-    --rollout-num-gpus-per-engine 2
-    --sglang-server-concurrency 1
-
+    --num-epoch 3
     --rollout-batch-size 128
     --global-batch-size 128
 
@@ -172,10 +160,9 @@ run: |
   OPTIMIZER_ARGS=(
     --optimizer adam
     --lr 1e-5
-    --lr-warmup-iters 128
-    --lr-decay-style constant
+    --lr-decay-style cosine
     --min-lr 1e-6
-    --lr-warmup-fraction 0.9
+    --lr-warmup-fraction 0.1
     --weight-decay 0.1
     --adam-beta1 0.9
     --adam-beta2 0.98
@@ -234,7 +221,8 @@ run: |
     \"env_vars\": {
       \"PYTHONPATH\": \"/root/Megatron-LM/\",
       \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-      \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+      \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+      \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\"
     }
   }"
 
@@ -245,8 +233,8 @@ run: |
   ray job submit --address="$RAY_ADDRESS" \
     --runtime-env-json="${RUNTIME_ENV_JSON}" \
     -- python3 slime/train_async.py \
-    --actor-num-nodes 1 \
-    --actor-num-gpus-per-node "${NUM_GPUS}" \
+    --actor-num-nodes "${SKYPILOT_NUM_NODES}" \
+    --actor-num-gpus-per-node "${SKYPILOT_NUM_GPUS_PER_NODE}" \
     "${MODEL_ARGS[@]:-}" \
     "${CKPT_ARGS[@]}" \
     "${SFT_ARGS[@]}" \
