@@ -1,7 +1,7 @@
 name: slime-sft
 
 resources:
-  accelerators: {H200:8, H100:8}
+  accelerators: H200:8
   image_id: docker:slimerl/slime:20251022-v3
   infra: k8s
   ports:
@@ -11,10 +11,20 @@ secrets:
   WANDB_API_KEY: ""
   HF_TOKEN: ""
 
-file_mounts:
-  /ckpt:
-    source: s3://eigen-train-skypilot
-    mode: MOUNT_CACHED
+config:
+  kubernetes:
+    pod_config:
+      spec:
+        containers:
+          - volumeMounts:
+              - mountPath: /data
+                name: data-volume
+        volumes:
+          - name: data-volume
+            hostPath:
+              path: /data
+              type: Directory
+
 
 envs:
   MODEL_PATH: "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -110,7 +120,7 @@ run: |
 
   SCRIPT_DIR="/root"
   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-  OUTPUT_DIR="/ckpt/outputs/${MODEL_SHORT}_${TIMESTAMP}"
+  OUTPUT_DIR="/data/eigen-train-outputs/${MODEL_SHORT}_${TIMESTAMP}"
 
   # ------------------------
   # CKPT / SFT / Perf / Optimizer args
