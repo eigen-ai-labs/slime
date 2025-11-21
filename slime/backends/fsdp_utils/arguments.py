@@ -17,9 +17,6 @@ class FSDPArgs:
     adam_eps: float = 1e-8
     warmup_ratio: float = 0.03
 
-    # Weight update configuration
-    update_weights_bucket_size: int = 512 * 1024 * 1024  # Bucket size for batching weight updates in bytes (512MB)
-
     attn_implementation: str = "flash_attention_2"
 
     # Logging
@@ -28,14 +25,20 @@ class FSDPArgs:
 
     # Precision
     gradient_checkpointing: bool = False
+    fp16: bool = False
 
     # FSDP configuration
     fsdp_full_params: bool = False  # If True, use full_tensor; if False, use shard_tensor
+    fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
 
     deterministic_mode: bool = False  # This name must be the same as Megatron's
     # Profile
     record_memory_history: bool = False
     memory_snapshot_path: str = "snapshot.pickle"
+    use_pytorch_profiler: bool = False
+    profile_step_start: int = 10
+    profile_step_end: int = 12
+    tensorboard_dir: str | None = None
 
     # YAML bookkeeping
     config: str | None = None

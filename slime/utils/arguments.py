@@ -124,6 +124,18 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Whether to enable true-on-policy mode.",
             )
+            parser.add_argument(
+                "--train-env-vars",
+                type=json.loads,
+                default="{}",
+                help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
+            )
+            parser.add_argument(
+                "--train-memory-margin-bytes",
+                type=int,
+                default=0,
+                help="Add margin for train memory allocation.",
+            )
 
             return parser
 
@@ -394,7 +406,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 "--num-rollout",
                 type=int,
                 default=None,
-                help="Number of rollout steps. Currently, we don't support passing num_epoch and calculate num_rollout from data size.",
+                help="Number of rollout steps. If not set, we will calculate the number of rollout steps from the dataset size.",
             )
             parser.add_argument(
                 "--num-epoch",
@@ -404,6 +416,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "Number of epochs for the training. "
                     "This is used to calculate the number of rollout steps from the dataset size. "
                     "If set, we will calculate the number of rollout steps as `num_rollout = num_epoch * dataset_size // rollout_batch_size`."
+                    "If both `--num-epoch` and `--num-rollout` are set, `--num-epoch` will be ignored."
                 ),
             )
 
@@ -665,7 +678,14 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--advantage-estimator",
                 type=str,
-                choices=["grpo", "gspo", "reinforce_plus_plus", "reinforce_plus_plus_baseline", "ppo"],
+                choices=[
+                    "grpo",
+                    "gspo",
+                    "reinforce_plus_plus",
+                    "reinforce_plus_plus_baseline",
+                    "ppo",
+                    "on_policy_distillation",
+                ],
                 default="grpo",
             )
             parser.add_argument(
@@ -757,6 +777,13 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 "--use-routing-replay",
                 action="store_true",
                 default=False,
+                help="The routing replay technique from https://arxiv.org/abs/2507.18071",
+            )
+            parser.add_argument(
+                "--use-rollout-routing-replay",
+                action="store_true",
+                default=False,
+                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
             )
             return parser
 
@@ -877,6 +904,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--load-debug-rollout-data-subsample",
+                type=float,
+                default=None,
+                help="Subsample a portion of the debug rollout data for faster debugging.",
+            )
+            parser.add_argument(
                 "--debug-rollout-only",
                 action="store_true",
                 default=False,
@@ -919,6 +952,19 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 "--memory-snapshot-num-steps",
                 type=int,
                 default=None,
+            )
+            parser.add_argument(
+                "--profile-target",
+                type=str,
+                choices=["train_overall", "train_actor", "train_log_probs"],
+                default=["train_overall"],
+                nargs="+",
+            )
+            parser.add_argument(
+                "--memory-recorder",
+                type=str,
+                choices=["torch", "memray"],
+                default="torch",
             )
             return parser
 
@@ -1035,6 +1081,19 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_mtp_training_arguments(parser):
+            """Add MTP training specific arguments."""
+            reset_arg(parser, "--mtp-num-layers", type=int, default=None)
+            reset_arg(parser, "--mtp-loss-scaling-factor", type=float, default=0.2)
+            parser.add_argument(
+                "--enable-mtp-training",
+                action="store_true",
+                default=False,
+                help="Enable MTP layer parameter updates during training",
+            )
+
+            return parser
+
         def add_ci_arguments(parser):
             parser.add_argument(
                 "--ci-test",
@@ -1082,6 +1141,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
+        parser = add_mtp_training_arguments(parser)
         parser = add_ci_arguments(parser)
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
 
@@ -1277,7 +1337,7 @@ def slime_validate_args(args):
     if args.load_debug_rollout_data is not None:
         print(
             f"load_debug_rollout_data {args.load_debug_rollout_data} is set, "
-            "will not instantiate sglang servers and will only run the rollout generation."
+            "will not instantiate sglang servers and will only run the training process."
         )
         args.debug_train_only = True
 
@@ -1372,6 +1432,12 @@ def slime_validate_args(args):
         assert args.num_rollout is not None, (
             "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
         )
+
+    if args.enable_mtp_training:
+        assert args.mtp_num_layers, "mtp_num_layers must be set when enable_mtp_training is set"
+
+    if args.use_rollout_routing_replay:
+        args.use_routing_replay = True
 
     if args.custom_config_path:
         with open(args.custom_config_path, "r") as f:

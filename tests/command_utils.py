@@ -3,12 +3,14 @@ import json
 import os
 import random
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from slime.utils.misc import exec_command
+from slime.utils.typer_utils import dataclass_cli
 
-_ = exec_command
+_ = exec_command, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[1]
 
@@ -34,16 +36,33 @@ def hf_download_dataset(full_name: str):
     exec_command(f"hf download --repo-type dataset {full_name} --local-dir /root/datasets/{partial_name}")
 
 
+@dataclass
+class ExecuteTrainConfig:
+    cuda_core_dump: bool = False
+    num_nodes: int = 1
+    extra_env_vars: str = ""
+
+    def __post_init__(self):
+        if (x := os.environ.get("SLURM_JOB_NUM_NODES")) is not None:
+            self.num_nodes = int(x)
+
+
 def execute_train(
     train_args: str,
+    # TODO rename to "num_gpus_per_node"
     num_gpus: int,
+    # TODO rename to "megatron_model_type"
     model_type: Optional[str],
+    config: ExecuteTrainConfig = ExecuteTrainConfig(),
     train_script: str = "train.py",
     before_ray_job_submit=None,
     extra_env_vars={},
 ):
     external_ray = bool(int(os.environ.get("SLIME_SCRIPT_EXTERNAL_RAY", "0")))
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+
+    train_backend_fsdp = "--train-backend fsdp" in train_args
+    assert train_backend_fsdp == (model_type is None)
 
     exec_command(
         "pkill -9 sglang; "
@@ -76,7 +95,14 @@ def execute_train(
         {
             "env_vars": {
                 "PYTHONPATH": "/root/Megatron-LM/",
-                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                # If setting this in FSDP, the computation communication overlapping may have issues
+                **(
+                    {}
+                    if train_backend_fsdp
+                    else {
+                        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                    }
+                ),
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
@@ -88,10 +114,11 @@ def execute_train(
                         "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
                         "CUDA_COREDUMP_FILE": "/tmp/cuda_coredump_%h.%p.%t",
                     }
-                    if get_bool_env_var("SLIME_SCRIPT_ENABLE_CUDA_CORE_DUMP")
+                    if config.cuda_core_dump
                     else {}
                 ),
                 **extra_env_vars,
+                **_parse_extra_env_vars(config.extra_env_vars),
             }
         }
     )
@@ -101,7 +128,7 @@ def execute_train(
 
     if bool(int(os.environ.get("SLIME_SCRIPT_ENABLE_RAY_SUBMIT", "1"))):
         exec_command(
-            f"export PYTHONBUFFERED=16 && "
+            f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
             f"{source_cmd}"
             # TODO should this 127.0.0.1 be `master_addr` instead
             f'ray job submit --address="http://127.0.0.1:8265" '
@@ -110,6 +137,13 @@ def execute_train(
             f"{model_args_str} "
             f"{train_args}"
         )
+
+
+def _parse_extra_env_vars(text: str):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {kv[0]: kv[1] for item in text.split(" ") if item.strip() != "" if (kv := item.split("=")) or True}
 
 
 def check_has_nvlink():
@@ -144,7 +178,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: Optional[str] = None
 
 
 def create_run_id() -> str:
-    return datetime.datetime.now().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    return datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
 
 
 _warned_bool_env_var_keys = set()

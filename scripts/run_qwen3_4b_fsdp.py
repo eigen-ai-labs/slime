@@ -1,75 +1,118 @@
-import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, Optional
+
+import typer
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "tests"))
 
 import command_utils as U
 
-MODEL_NAME = os.environ.get("SLIME_SCRIPT_MODEL_NAME", "Qwen3-4B")
-NUM_GPUS = 8
 
-EXTRA_ARGS = os.environ.get("SLIME_SCRIPT_EXTRA_ARGS", "")
-MULTI_EVAL = bool(int(os.environ.get("SLIME_SCRIPT_MULTI_EVAL", "1")))
+@dataclass
+class ScriptArgs(U.ExecuteTrainConfig):
+    mode: Literal["normal", "debug_minimal"] = "normal"
+    run_id: str = U.create_run_id()
+    model_name: str = "Qwen3-4B-Instruct-2507"
+    megatron_model_type: Optional[str] = None
+    num_gpus_per_node: Optional[int] = None
+    hardware: Literal["H100", "GB300"] = "H100"
+    extra_args: str = ""
+    multi_eval: bool = False
+    true_on_policy: bool = False
+    dynamic_sampling: bool = False
+    enable_eval: bool = True
+    train_backend: Literal["fsdp", "megatron"] = "fsdp"
 
-MODE = os.environ.get("SLIME_SCRIPT_MODE", "normal")
-assert MODE in {"normal", "debug_minimal"}
+    def __post_init__(self):
+        super().__post_init__()
 
-ENABLE_TRUE_ON_POLICY = bool(int(os.environ.get("SLIME_SCRIPT_ENABLE_TRUE_ON_POLICY", "0")))
+        if self.train_backend == "megatron":
+            self.megatron_model_type = {
+                "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
+                "Qwen3-4B-Base": "qwen3-4B",
+            }[self.model_name]
+
+        if self.num_gpus_per_node is None:
+            self.num_gpus_per_node = {
+                "H100": 8,
+                "GB300": 4,
+            }[self.hardware]
 
 
-def prepare():
+def prepare(args: ScriptArgs):
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"huggingface-cli download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command(f"huggingface-cli download Qwen/{args.model_name} --local-dir /root/models/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
     U.hf_download_dataset("zyzshishui0627/gpqa_diamond")
     U.hf_download_dataset("zyzshishui0627/IFBench")
+    if args.train_backend == "megatron":
+        U.convert_checkpoint(
+            model_name=args.model_name,
+            model_type=args.megatron_model_type,
+            num_gpus=args.num_gpus_per_node,
+            # TODO unify
+            dir_dst="/root/models",
+        )
 
 
-def execute():
+def execute(args: ScriptArgs):
+    load_save_path = f"/root/shared_data/{args.run_id}/checkpoints"
     ckpt_args = (
-        f"--hf-checkpoint /root/models/{MODEL_NAME} "
-        # "--ref-load /root/models/{MODEL_NAME} "
+        f"--hf-checkpoint /root/models/{args.model_name} "
+        f"--load {load_save_path} "
+        f"--save {load_save_path} "
+        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
+        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
     )
+    if args.train_backend == "megatron":
+        ckpt_args += (
+            # FSDP does not support this
+            f"--ref-load /root/models/{args.model_name}_torch_dist "
+        )
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
+        # By default it is thinking mode
+        # """--apply-chat-template-kwargs '{"enable_thinking":false}' """
         "--rollout-shuffle "
-        "--rm-type deepscaler "
+        "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if MODE == 'debug_minimal' else 8192} "
+        "--rollout-batch-size 64 "
+        "--n-samples-per-prompt 16 "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
         "--rollout-temperature 0.8 "
-        "--global-batch-size 256 "
+        "--global-batch-size 1024 "
         "--balance-data "
     )
 
-    # when using tiny response len, cannot do dynamic sampling
-    if MODE != "debug_minimal":
+    if args.dynamic_sampling and (args.true_on_policy != "debug_minimal"):
         rollout_args += (
-            "--over-sampling-batch-size 64 "
+            # Shall we increase this since we have to do 2 rounds now
+            "--over-sampling-batch-size 128 "
             "--dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         )
 
     # sometimes disable eval to speed up debugging
     eval_args = ""
-    if (MODE != "debug_minimal") and bool(int(os.environ.get("SLIME_SCRIPT_ENABLE_EVAL", "1"))):
+    if (args.mode != "debug_minimal") and args.enable_eval:
+        eval_max_response_len = 32768
         eval_args += "--eval-interval 20 "
-        if MULTI_EVAL:
-            eval_config_text = """
+        if args.multi_eval:
+            eval_config_text = f"""
 eval:
   defaults:
-    max_response_len: 16384
+    max_response_len: {eval_max_response_len}
     top_p: 0.7
   datasets:
     - name: aime
       path: /root/datasets/aime-2024/aime-2024.jsonl
-      rm_type: deepscaler
+      rm_type: math
       n_samples_per_eval_prompt: 16
     - name: gpqa
       path: /root/datasets/gpqa_diamond/gpqa_eval.jsonl
@@ -85,11 +128,9 @@ eval:
             eval_args += (
                 "--eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 16 "
-                "--eval-max-response-len 16384 "
+                f"--eval-max-response-len {eval_max_response_len} "
                 "--eval-top-p 0.7 "
             )
-
-    perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -111,31 +152,69 @@ eval:
         "--adam-beta2 0.98 "
     )
 
-    # TODO improve mem-frac
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        f"--sglang-mem-fraction-static {os.environ.get('SLIME_SCRIPT_SGLANG_MEM_FRACTION_STATIC', '0.8')} "
-        "--sglang-chunked-prefill-size 4096 "
-    )
+    sglang_args = f"--rollout-num-gpus-per-engine 1 " "--sglang-chunked-prefill-size 4096 "
 
-    fsdp_args = (
-        "--train-backend fsdp "
-        "--attn-implementation flash_attention_2 "
-        "--gradient-checkpointing "
-        f"--update-weights-bucket-size {512 * 1024 * 1024} "  # 512MB
-    )
+    match args.train_backend:
+        case "fsdp":
+            train_backend_args = (
+                "--train-backend fsdp "
+                "--attn-implementation flash_attention_2 "
+                "--gradient-checkpointing "
+                f"--update-weight-buffer-size {512 * 1024 * 1024} "  # 512MB
+                "--offload-train-mode move "
+                """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
+            )
+            sglang_args += f"--sglang-mem-fraction-static 0.75 "
+            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 32768 "
+
+        case "megatron":
+            train_backend_args = (
+                f"--tensor-model-parallel-size {2 if args.num_gpus_per_node == 8 else 1} "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 1 "
+                f"--context-parallel-size {4 if args.num_gpus_per_node == 8 else 1} "
+                "--expert-model-parallel-size 1 "
+                "--expert-tensor-parallel-size 1 "
+                "--recompute-granularity full "
+                "--recompute-method uniform "
+                "--recompute-num-layers 1 "
+                # default dropout in megatron is 0.1
+                "--attention-dropout 0.0 "
+                "--hidden-dropout 0.0 "
+                # should be good for model performance
+                "--accumulate-allreduce-grads-in-fp32 "
+                "--attention-softmax-in-fp32 "
+                # need to comment this when using model with MLA
+                "--attention-backend flash "
+                "--train-memory-margin-bytes 3221225472 "
+            )
+            # TODO improve
+            sglang_args += f"--sglang-mem-fraction-static 0.7 "
+            perf_args = "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
+
+        case _:
+            raise NotImplementedError
 
     misc_args = (
-        "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 8 "
+        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--offload-train-mode move "
         "--use-fault-tolerance "
+        f"--dump-details /root/shared_data/{args.run_id}/dump_details "
     )
+
+    misc_env_vars = {}
+
+    if args.model_name == "Qwen3-4B-Base":
+        misc_args += "--sglang-context-length 36000 "
+        misc_env_vars |= {
+            "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
+        }
 
     true_on_policy_args = ""
     true_on_policy_envs = {}
-    if ENABLE_TRUE_ON_POLICY:
+    if args.true_on_policy:
         true_on_policy_args = (
             "--sglang-enable-deterministic-inference "
             "--sglang-rl-on-policy-target fsdp "
@@ -145,8 +224,6 @@ eval:
             "--true-on-policy-mode "
         )
         true_on_policy_envs = {
-            # TODO note: "Ring" in original RL PR, "allreduce:tree" in SGLang
-            # "NCCL_ALGO": "Ring",
             "NCCL_ALGO": "allreduce:tree",
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
@@ -157,26 +234,34 @@ eval:
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
-        f"{fsdp_args} "
+        f"{train_backend_args} "
         f"{misc_args} "
         f"{true_on_policy_args} "
-        f"{EXTRA_ARGS} "
+        f"{args.extra_args} "
     )
 
     U.execute_train(
         train_args=train_args,
-        num_gpus=NUM_GPUS,
-        model_type=None,
+        config=args,
+        # TODO may get it from `config`
+        num_gpus=args.num_gpus_per_node,
+        model_type=args.megatron_model_type,
         extra_env_vars={
+            **misc_env_vars,
             **true_on_policy_envs,
         },
     )
 
 
+@U.dataclass_cli
+def main(args: ScriptArgs):
+    prepare(args)
+    execute(args)
+
+
 if __name__ == "__main__":
-    prepare()
-    execute()
+    typer.run(main)

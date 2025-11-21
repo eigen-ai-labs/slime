@@ -2,6 +2,12 @@ import re
 
 import torch
 
+try:
+    from sglang.srt.layers.quantization.fp8_utils import quant_weight_ue8m0, transform_scale_ue8m0
+    from sglang.srt.model_loader.utils import should_deepgemm_weight_requant_ue8m0
+except ImportError:
+    should_deepgemm_weight_requant_ue8m0 = None
+
 from slime.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
 from .deepseekv3 import convert_deepseekv3_to_hf
@@ -23,7 +29,13 @@ def quantize_param(name, weight, weight_block_size):
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
     if weight_block_size is not None:
-        qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
+        if should_deepgemm_weight_requant_ue8m0 and should_deepgemm_weight_requant_ue8m0(
+            weight_block_size=weight_block_size
+        ):
+            qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
+            scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
+        else:
+            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
         # per tensor quant
@@ -46,9 +58,16 @@ def quantize_params(args, megatron_name, converted_named_params, quantization_co
     match = re.match(decoder_layers_pattern, megatron_name)
 
     if not match:
-        return converted_named_params
+        # check mtp layers
+        mtp_layer_pattern = r"module\.module\.mtp\.layers\.(\d+)\.(.+)"
+        match = re.match(mtp_layer_pattern, megatron_name)
+        if not match:
+            return converted_named_params
+        layer_idx, rest = match.groups()
+        rest = rest.replace("transformer_layer.", "")
+    else:
+        layer_idx, rest = match.groups()
 
-    layer_idx, rest = match.groups()
     # experts
     expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
     match = re.match(expert_pattern, rest)
