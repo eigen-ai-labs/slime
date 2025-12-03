@@ -12,57 +12,60 @@ pkill -9 python
 
 set -ex
 
-
-huggingface-cli download --repo-type dataset zhuzilin/gsm8k --local-dir gsm8k
-
-
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
+NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
+if [ "$NVLINK_COUNT" -gt 0 ]; then
+    HAS_NVLINK=1
+else
+    HAS_NVLINK=0
+fi
+echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../scripts/models/qwen2.5-0.5B.sh"
+source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B-Instruct-2507.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen2.5-0.5B-Instruct/
-   --ref-load /root/Qwen2.5-0.5B-Instruct_torch_dist/
+   --hf-checkpoint /root/Qwen3-4B-Instruct-2507/
+   --ref-load /root/Qwen3-4B-Instruct-2507_torch_dist/
+   --load /root/Qwen3-4B-Instruct-2507_slime/
+   --save /root/Qwen3-4B-Instruct-2507_slime/
+   --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data gsm8k/train.parquet
-   --input-key messages
-   --label-key label
-   --apply-chat-template
+   --prompt-data /root/tau-bench/retail_train_tasks.jsonl
+   --input-key index
    --rollout-shuffle
-   --rm-type math
-   --num-rollout 3000
+   --num-rollout 500
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 1024
    --rollout-temperature 0.8
-
-   --over-sampling-batch-size 64
-   --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
-
    --global-batch-size 256
+   --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+   --balance-data
 )
 
 EVAL_ARGS=(
-   --eval-interval 20
-   --eval-prompt-data gsm8k gsm8k/test.parquet
+   --eval-interval 5
+   --eval-prompt-data retail-dev /root/tau-bench/retail_dev_tasks.jsonl
    --n-samples-per-eval-prompt 1
    --eval-max-response-len 1024
    --eval-top-k 1
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
-
-   # --micro-batch-size 1
+   --recompute-granularity full
+   --recompute-method uniform
+   --recompute-num-layers 1
    --use-dynamic-batch-size
    --max-tokens-per-gpu 9216
 )
@@ -87,14 +90,17 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   --use-wandb
-   --wandb-project slime-test
-   --wandb-group test-qwen2.5-0.5B-gsm8k
+   # --use-wandb
+   # --wandb-project slime-tau-bench
+   # --wandb-group qwen3-4B
+   # --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.7
+   # If gemini API reports concurrency limit error, set this parameter to reduce the concurrency
+   # --sglang-server-concurrency 32
 )
 
 MISC_ARGS=(
@@ -108,27 +114,39 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
+CUSTOM_ARGS=(
+   --custom-generate-function-path generate_with_tau.generate
+)
 # launch the master node of ray in container
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats
+export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
+
+# If you want more or less GPUs, change this parameter
+NUM_GPUS=2
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265 --temp-dir /root/shared/ray_temp 
+
+RUNTIME_ENV_JSON="{
+  \"env_vars\": {
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
+  }
+}"
 
 ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{
-     "env_vars": {
-        "PYTHONPATH": "/root/Megatron-LM",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1"
-     }
-   }' \
+   --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 4 \
+   --actor-num-gpus-per-node ${NUM_GPUS} \
+   --rollout-num-gpus ${NUM_GPUS} \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${GRPO_ARGS[@]} \
+   ${DISTRIBUTED_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   ${CUSTOM_ARGS[@]}

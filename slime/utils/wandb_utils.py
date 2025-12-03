@@ -1,7 +1,10 @@
+import logging
 import os
 from copy import deepcopy
 
 import wandb
+
+logger = logging.getLogger(__name__)
 
 
 def _is_offline_mode(args) -> bool:
@@ -18,17 +21,18 @@ def _is_offline_mode(args) -> bool:
 
 def init_wandb_primary(args):
     if not args.use_wandb:
-        return None
+        args.wandb_run_id = None
+        return
 
     # Set W&B mode if specified (overrides WANDB_MODE env var)
     if args.wandb_mode:
         os.environ["WANDB_MODE"] = args.wandb_mode
         if args.wandb_mode == "offline":
-            print("W&B offline mode enabled. Data will be saved locally.")
+            logger.info("W&B offline mode enabled. Data will be saved locally.")
         elif args.wandb_mode == "disabled":
-            print("W&B disabled mode enabled. No data will be logged.")
+            logger.info("W&B disabled mode enabled. No data will be logged.")
         elif args.wandb_mode == "online":
-            print("W&B online mode enabled. Data will be uploaded to cloud.")
+            logger.info("W&B online mode enabled. Data will be uploaded to cloud.")
 
     offline = _is_offline_mode(args)
 
@@ -65,13 +69,14 @@ def init_wandb_primary(args):
         # Ensure directory exists to avoid backend crashes
         os.makedirs(args.wandb_dir, exist_ok=True)
         init_kwargs["dir"] = args.wandb_dir
-        print(f"W&B logs will be stored in: {args.wandb_dir}")
+        logger.info(f"W&B logs will be stored in: {args.wandb_dir}")
 
     wandb.init(**init_kwargs)
 
     _init_wandb_common()
 
-    return wandb.run.id
+    # Set wandb_run_id in args for easy access throughout the training process
+    args.wandb_run_id = wandb.run.id
 
 
 def _compute_config_for_logging(args):
@@ -87,7 +92,8 @@ def _compute_config_for_logging(args):
 
 
 # https://docs.wandb.ai/guides/track/log/distributed-training/#track-all-processes-to-a-single-run
-def init_wandb_secondary(args, wandb_run_id, router_addr=None):
+def init_wandb_secondary(args, router_addr=None):
+    wandb_run_id = getattr(args, "wandb_run_id", None)
     if wandb_run_id is None:
         return
 
@@ -111,7 +117,7 @@ def init_wandb_secondary(args, wandb_run_id, router_addr=None):
         )
 
     if args.sglang_enable_metrics and router_addr is not None:
-        print(f"Forward SGLang metrics at {router_addr} to WandB.")
+        logger.info(f"Forward SGLang metrics at {router_addr} to WandB.")
         settings_kwargs |= dict(
             x_stats_open_metrics_endpoints={
                 "sgl_engine": f"{router_addr}/engine_metrics",

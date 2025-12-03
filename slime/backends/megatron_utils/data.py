@@ -1,36 +1,45 @@
+import logging
 from argparse import Namespace
-from typing import Optional, Sequence, Union
+from collections.abc import Sequence
 
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import wandb
 from megatron.core import mpu
 from megatron.core.packed_seq_params import PackedSeqParams
 
 from slime.utils import train_metric_utils
 from slime.utils.data import get_minimum_num_micro_batch_size
 from slime.utils.flops_utils import calculate_fwd_flops
-from slime.utils.metric_utils import compute_pass_rate
+from slime.utils.metric_utils import compute_pass_rate, compute_rollout_step
 from slime.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from slime.utils.types import RolloutBatch
 
+from ...utils import tracking_utils
 from .cp_utils import get_sum_of_sample_mean, slice_with_cp
+
+logger = logging.getLogger(__name__)
 
 
 def get_batch(
     data_iterator: "DataIterator",
     keys: Sequence[str],
-) -> dict[str, Union[torch.Tensor, PackedSeqParams, list[torch.Tensor], None]]:
+    pad_multiplier: int = 128,
+) -> dict[str, torch.Tensor | PackedSeqParams | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
 
     Steps:
     - Fetch raw fields via iterator.
     - Save original token tensors under "unconcat_tokens".
-    - Slice tokens into two chunks for Context Parallelism (CP), concatenate, and pad to a multiple of 128.
+    - Slice tokens into two chunks for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
     - Build cu_seqlens and `PackedSeqParams` with T-H-D layout (T: sequence length, H: attention heads, D: head dimension).
+
+    Args:
+        data_iterator: Iterator providing micro-batch data.
+        keys: List of keys to fetch from the iterator.
+        pad_multiplier: Multiplier for padding size calculation (default: 128).
 
     Returns a dict including:
     - "tokens": torch.LongTensor of shape [1, T_padded] on the current CUDA device
@@ -59,9 +68,9 @@ def get_batch(
 
     tokens = torch.cat(tokens)
 
-    # Always pad to 128 to reduce memory fragmentation and maybe make the computation faster
-    # TODO: make this configurable?
-    pad = (128 - tokens.size(0) % 128) % 128
+    # Always pad to reduce memory fragmentation and maybe make the computation faster
+    pad_size = mpu.get_tensor_model_parallel_world_size() * pad_multiplier
+    pad = (pad_size - tokens.size(0) % pad_size) % pad_size
     if pad != 0:
         tokens = F.pad(tokens, (0, pad), value=pad_token_id)
         cu_seqlens.append(cu_seqlens[-1] + pad)
@@ -89,7 +98,7 @@ def gather_log_data(
     args: Namespace,
     rollout_id: int,
     log_dict: dict[str, float],
-) -> Optional[dict[str, float]]:
+) -> dict[str, float] | None:
     """
     Gather per-rank metrics, reduce by mean on the DP source rank, and log.
 
@@ -113,23 +122,12 @@ def gather_log_data(
         reduced_log_dict = {
             f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / dp_size for key in log_dict
         }
-        print(f"{metric_name} {rollout_id}: {reduced_log_dict}")
+        logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
         # Calculate step once to avoid duplication
-        step = (
-            rollout_id
-            if not args.wandb_always_use_train_step
-            else rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
-        )
-        if args.use_wandb:
-            reduced_log_dict["rollout/step"] = step
-            wandb.log(reduced_log_dict)
-
-        if args.use_tensorboard:
-            from slime.utils.tensorboard_utils import _TensorboardAdapter
-
-            tb = _TensorboardAdapter(args)
-            tb.log(data=reduced_log_dict, step=step)
+        step = compute_rollout_step(args, rollout_id)
+        reduced_log_dict["rollout/step"] = step
+        tracking_utils.log(args, reduced_log_dict, step_key="rollout/step")
 
         return reduced_log_dict
     else:
@@ -152,8 +150,8 @@ class DataIterator:
     def __init__(
         self,
         rollout_data: RolloutBatch,
-        micro_batch_size: Optional[int] = None,
-        micro_batch_indices: Optional[list[list[int]]] = None,
+        micro_batch_size: int | None = None,
+        micro_batch_indices: list[list[int]] | None = None,
     ) -> None:
         """Initialize an iterator over `rollout_data`.
 
@@ -169,7 +167,7 @@ class DataIterator:
         assert micro_batch_size is None or micro_batch_indices is None
         self.offset = 0
 
-    def get_next(self, keys: Sequence[str]) -> dict[str, Optional[list[object]]]:
+    def get_next(self, keys: Sequence[str]) -> dict[str, list[object] | None]:
         """Return the next micro-batch for the requested keys.
 
         - If `micro_batch_indices` is provided, selects rows according to the current
@@ -208,7 +206,7 @@ class DataIterator:
 
 def get_data_iterator(
     args: Namespace,
-    model: Union[torch.nn.Module, Sequence[torch.nn.Module]],
+    model: torch.nn.Module | Sequence[torch.nn.Module],
     rollout_data: RolloutBatch,
 ) -> tuple[list[DataIterator], list[int]]:
     """
@@ -340,7 +338,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             elif isinstance(val, torch.Tensor):
                 val = val.float().mean()
             else:
-                raise ValueError(f"Unsupported type: {type(val)}")
+                raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
@@ -440,8 +438,8 @@ def log_perf_data(rollout_id: int, args: Namespace) -> None:
 
 def sync_actor_critic_data(
     args: Namespace,
-    rollout_data: Optional[RolloutBatch] = None,
-    group: Optional[dist.ProcessGroup] = None,
+    rollout_data: RolloutBatch | None = None,
+    group: dist.ProcessGroup | None = None,
 ) -> None:
     """
     Broadcast `values` (from critic) and optionally `log_probs`/`ref_log_probs`
@@ -451,7 +449,8 @@ def sync_actor_critic_data(
     - Log-probs and ref-log-probs are broadcast from src=0 when KL is used.
     Updates `rollout_data` in place with the synchronized tensors.
     """
-    values, log_probs, ref_log_probs = map(rollout_data.get, ("values", "log_probs", "ref_log_probs"))
+    log_probs_key = "log_probs" if not args.use_rollout_logprobs else "rollout_log_probs"
+    values, log_probs, ref_log_probs = map(rollout_data.get, ("values", log_probs_key, "ref_log_probs"))
 
     # return when not the pp last stage
     if not values and not log_probs:
@@ -466,13 +465,24 @@ def sync_actor_critic_data(
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not log_probs:
-            ref_log_probs = [torch.empty_like(value) for value in values]
             log_probs = [torch.empty_like(value) for value in values]
-        for ref_log_prob, log_prob in zip(ref_log_probs, log_probs):
-            handles.append(dist.broadcast(ref_log_prob, src=0, group=group, async_op=True))
+        if not ref_log_probs:
+            ref_log_probs = [torch.empty_like(value) for value in values]
+        for ref_log_prob, log_prob in zip(ref_log_probs, log_probs, strict=False):
             handles.append(dist.broadcast(log_prob, src=0, group=group, async_op=True))
+            handles.append(dist.broadcast(ref_log_prob, src=0, group=group, async_op=True))
 
     for handle in handles:
         handle.wait()
 
-    rollout_data.update({"values": values, "log_probs": log_probs, "ref_log_probs": ref_log_probs})
+    rollout_data.update(
+        {
+            k: v
+            for k, v in {
+                "values": values,
+                log_probs_key: log_probs,
+                "ref_log_probs": ref_log_probs,
+            }.items()
+            if v is not None
+        }
+    )

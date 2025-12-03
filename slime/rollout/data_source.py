@@ -1,4 +1,6 @@
+import abc
 import copy
+import logging
 import os
 from pathlib import Path
 
@@ -9,9 +11,37 @@ from slime.utils.data import Dataset
 from slime.utils.misc import load_function
 from slime.utils.types import Sample
 
+logger = logging.getLogger(__name__)
+
+
+class DataSource(abc.ABC):
+    @abc.abstractmethod
+    def get_samples(self, num_samples: int) -> list[list[Sample]]:
+        """
+        Return num_samples samples
+        """
+
+    @abc.abstractmethod
+    def add_samples(self, samples: list[list[Sample]]):
+        """
+        Add samples to the data source
+        """
+
+    @abc.abstractmethod
+    def save(self, rollout_id):
+        """
+        Save the state of the data source
+        """
+
+    @abc.abstractmethod
+    def load(self, rollout_id=None):
+        """
+        Load the state of the data source
+        """
+
 
 # TODO may further refactor data-loading part later
-class RolloutDataSource:
+class RolloutDataSource(DataSource):
     def __init__(self, args):
         self.args = args
 
@@ -103,11 +133,11 @@ class RolloutDataSource:
 
         path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
-            print(f"Checkpoint {path} does not exist.")
+            logger.info(f"Checkpoint {path} does not exist.")
             return
 
-        print(f"load metadata from {path}")
-        print(f"load metadata: {self.metadata}")
+        logger.info(f"load metadata from {path}")
+        logger.info(f"load metadata: {self.metadata}")
         state_dict = torch.load(path)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
