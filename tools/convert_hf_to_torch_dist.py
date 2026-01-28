@@ -11,7 +11,7 @@ from megatron.training.training import get_model
 
 import slime_plugins.mbridge  # noqa: F401
 from mbridge import AutoBridge
-from slime.backends.megatron_utils import set_default_megatron_args
+from slime.backends.megatron_utils.arguments import set_default_megatron_args
 from slime.backends.megatron_utils.initialize import init
 from slime.backends.megatron_utils.model_provider import get_model_provider_func
 from slime.utils.logging_utils import configure_logger
@@ -21,6 +21,12 @@ from slime.utils.memory_utils import print_memory
 def add_convertion_args(parser):
     """Add conversion arguments to the parser"""
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
+    parser.add_argument(
+        "--megatron-to-hf-mode",
+        choices=["raw", "bridge"],
+        default="raw",
+        help="The method to convert megatron weights to hugging face weights for SGLang.",
+    )
     try:
         parser.add_argument("--padded-vocab-size", type=int, default=None)
     except Exception:
@@ -72,6 +78,13 @@ def get_args():
 
 
 def main():
+    if torch.version.hip:
+        import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
+        from slime.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
+
+        filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
+        print("[ROCm] Applied FileSystemWriterAsync patch for HIP compatibility")
+
     configure_logger()
 
     # Initialize distributed environment
@@ -93,6 +106,11 @@ def main():
     )
     args = get_args()
     init(args)
+
+    # if using AMD gpus, we have to do the conversion in cpu
+    if hasattr(torch.version, "hip") and torch.version.hip is not None:
+        assert args.use_cpu_initialization, "AMD GPU requires --use_cpu_initialization=True"
+
     model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
 
     # Load model
@@ -100,6 +118,9 @@ def main():
     bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
+
+    if args.use_cpu_initialization:
+        model[0] = model[0].cpu()
 
     print_memory("after loading model")
     torch.cuda.synchronize()

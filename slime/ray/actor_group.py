@@ -31,7 +31,7 @@ class RayTrainGroup:
         args,
         num_nodes,
         num_gpus_per_node,
-        pg: tuple[PlacementGroup, list[int]],
+        pg: tuple[PlacementGroup, list[int], list[int]],
         num_gpus_per_actor: float = 1,
         role: str = "actor",
     ) -> None:
@@ -48,13 +48,13 @@ class RayTrainGroup:
 
         # Use placement group to lock resources for models of same type
         assert pg is not None
-        pg, reordered_bundle_indices = pg
+        pg, reordered_bundle_indices, _reordered_gpu_ids = pg
 
         env_vars = {
             # because sglang will always set NCCL_CUMEM_ENABLE to 0
             # we need also set it to 0 to prevent nccl error.
             "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "1"),
             **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
             **self.args.train_env_vars,
         }
@@ -72,12 +72,13 @@ class RayTrainGroup:
             env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
-        if self.args.use_routing_replay:
+        # We cannot do routing replay for critic.
+        if self.args.use_routing_replay and self.role == "actor":
             env_vars["ENABLE_ROUTING_REPLAY"] = "1"
 
         backend = self.args.train_backend
         if backend == "megatron":
-            from slime.backends.megatron_utils import MegatronTrainRayActor
+            from slime.backends.megatron_utils.actor import MegatronTrainRayActor
 
             actor_impl = MegatronTrainRayActor
 
@@ -115,9 +116,9 @@ class RayTrainGroup:
         """Do one rollout training"""
         return [actor.train.remote(rollout_id, rollout_data_ref) for actor in self._actor_handlers]
 
-    def save_model(self, step_id):
-        """Save actor model on rank 0."""
-        return ray.get([actor.save_model.remote(step_id) for actor in self._actor_handlers])
+    def save_model(self, rollout_id, force_sync=False):
+        """Save actor model"""
+        return ray.get([actor.save_model.remote(rollout_id, force_sync=force_sync) for actor in self._actor_handlers])
 
     def update_weights(self):
         """Broadcast weights from rank 0 to all other ranks."""

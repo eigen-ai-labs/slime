@@ -3,13 +3,13 @@
 
 ## Environment Preparation
 
-The environment setup, model download, data, and checkpoint conversion are the same as for the Qwen3-4B model. You can refer to [Example: Qwen3-4B Model](./qwen3-4B.md), replacing mentions of Qwen3-4B with Qwen3-30B-A3B.
+The environment setup, model download, data, and checkpoint conversion are the same as for the Qwen3-4B model. You can refer to [Example: Qwen3-4B Model](qwen3-4B.md), replacing mentions of Qwen3-4B with Qwen3-30B-A3B.
 
 To convert huggingface checkpoint to torch_dist, please try:
 
 ```bash
 cd slime/
-pip install -e .
+pip install -e . --no-deps
 source scripts/models/qwen3-30B-A3B.sh
 PYTHONPATH=/root/Megatron-LM/ torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
@@ -29,7 +29,7 @@ bash scripts/run-qwen3-30B-A3B.sh
 
 ### Parameter Introduction
 
-Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.sh](../../../scripts/run-qwen3-30B-A3B.sh) script.
+Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.sh](https://github.com/THUDM/slime/blob/main/scripts/run-qwen3-30B-A3B.sh) script.
 
 1.  To support running Qwen3-30B-A3B in an 8xH800 environment, we need to enable Megatron's CPU Adam to save GPU memory. The corresponding configuration is:
 
@@ -62,7 +62,7 @@ Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.
     SGLANG_ARGS=(
        --rollout-num-gpus-per-engine 8
        --sglang-mem-fraction-static 0.7
-       --sglang-enable-ep-moe
+       --sglang-ep-size 8
        --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
     )
     ```
@@ -79,7 +79,7 @@ Here, we will briefly introduce the MoE-related parts in the [run-qwen3-30B-A3B.
 slime also supports BF16 training with FP8 inference. For the Qwen3-30B-A3B model, you just need to download the following model:
 
 ```bash
-huggingface-cli download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/Qwen3-30B-A3B-FP8
+hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/Qwen3-30B-A3B-FP8
 ```
 
 And replace `--hf-checkpoint` with:
@@ -109,7 +109,7 @@ In addition, you can make the following changes:
    SGLANG_ARGS=(
       --rollout-num-gpus-per-engine 24
       --sglang-mem-fraction-static 0.7
-      --sglang-enable-ep-moe
+      --sglang-ep-size 24
       --sglang-enable-dp-attention
       --sglang-dp-size 3
 

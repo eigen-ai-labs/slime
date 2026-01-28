@@ -1,7 +1,7 @@
 import dataclasses
 
 from slime.utils import megatron_bridge_utils
-from slime.utils.iter_utils import chunk_named_params_by_size
+from slime.utils.misc import chunk_named_params_by_size
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..misc_utils import strip_param_name_prefix
@@ -13,9 +13,10 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
         super().__init__(*args, **kwargs)
 
         from megatron.bridge import AutoBridge
+
         import slime_plugins.megatron_bridge  # noqa: F401
 
-        self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint)
+        self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
     def get_hf_weight_chunks(self, megatron_local_weights):
         # TODO support quantization (e.g. modify megatron-bridge to provide megatron param name)

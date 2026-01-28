@@ -48,8 +48,8 @@ ROLLOUT_ARGS=(
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
-   --rollout-max-response-len 15000
-   --rollout-temperature 0.8
+   --rollout-max-response-len 8192
+   --rollout-temperature 1
 
    --over-sampling-batch-size 32
    --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
@@ -63,8 +63,7 @@ EVAL_ARGS=(
    --eval-prompt-data aime ${DATA_DIR}/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
-   --eval-top-p 0.95
-   --eval-temperature 0.6
+   --eval-top-p 1
 )
 
 PERF_ARGS=(
@@ -116,6 +115,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
+   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
 )
 
 MISC_ARGS=(

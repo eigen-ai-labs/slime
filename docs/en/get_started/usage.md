@@ -28,6 +28,15 @@ For co-located training and inference, you also need to configure:
 
   - `--colocate`: Enables co-located training and inference. When enabled, it ignores `--rollout-num-gpus` and makes the number of GPUs for training and inference equal.
 
+Additionally, slime supports Prefill and Decode disaggregation (PD Disaggregation). You can set the number of servers used for Prefill by setting the `--prefill-num-servers` argument.
+
+### Choosing Training Backend
+
+slime supports multiple training backends, which can be selected via the `--train-backend` parameter:
+
+- `megatron` (default): Uses Megatron-LM as the training backend, supporting efficient training of large-scale models.
+- `fsdp` (experimental): Uses PyTorch FSDP as the training backend, allowing direct loading of HuggingFace format weights without conversion.
+
 ### Loading Megatron
 
 Unlike tools such as SGLang, vLLM, or Hugging Face Trainer, Megatron cannot directly read Hugging Face checkpoints. Instead, the user must configure the parameters for the model to be trained and load Megatron's own checkpoint format.
@@ -67,7 +76,7 @@ MODEL_ARGS=(
 )
 ```
 
-We provide configurations for common models in [scripts/models](../../scripts/models), which you can reuse directly. If you are also using Megatron for pre-training/SFT, you can directly reuse the model configurations from your pre-training/SFT setup.
+We provide configurations for common models in [scripts/models](../../../scripts/models), which you can reuse directly. If you are also using Megatron for pre-training/SFT, you can directly reuse the model configurations from your pre-training/SFT setup.
 
 Note:
 
@@ -99,7 +108,7 @@ Megatron supports several of its custom checkpoint formats. Here are two of the 
 
 The `torch` format is Megatron's older storage format. Its structure consists of directories like `mp_rank_xxx`, where each directory corresponds to the checkpoint stored by each rank under a specific parallel partitioning. Because of this, when loading a `torch` format checkpoint, you must ensure that the checkpoint's parallelism strategy matches that of the training task.
 
-We recommend using the `torch_dist` format because it supports automatic parallel sharding, meaning that training tasks with different parallelism settings can share the same checkpoint, which is much more convenient. `torch_dist` is also the default format in the open-source Megatron. A `torch_dist` format checkpoint typically contains a set of `.distcp` files. When using `torch_dist`, you can convert from Hugging Face to `torch_dist` and vice versa using the checkpoint conversion method described in the [README](../../README.md).
+We recommend using the `torch_dist` format because it supports automatic parallel sharding, meaning that training tasks with different parallelism settings can share the same checkpoint, which is much more convenient. `torch_dist` is also the default format in the open-source Megatron. A `torch_dist` format checkpoint typically contains a set of `.distcp` files. When using `torch_dist`, you can convert from Hugging Face to `torch_dist` and vice versa using the checkpoint conversion method described in the [README](../../../README.md).
 
 In terms of storage structure, a Megatron checkpoint typically looks like this, assuming the storage path is `/ckpt/`:
 
@@ -138,6 +147,7 @@ Note:
   - Before the first training step, slime will synchronize the parameters from Megatron to SGLang. Therefore, the `--hf-checkpoint` does not need to contain the latest training parameters, and you do not need to change the HF checkpoint when resuming training.
   - By default, SGLang reads the maximum context length from the `config.json` in the Hugging Face checkpoint. You can use the `--sglang-context-length` parameter to override this value to support longer inference.
   - During co-located training and inference, although Megatron and SGLang will offload sequentially, they still need to leave some memory for each other. You need to adjust SGLang's total VRAM usage by reducing `--sglang-mem-fraction-static`.
+  - slime supports passing through sgl-router parameters by adding a `router` prefix to the original parameter name. For example, sgl-router's `--balance-abs-threshold` parameter should be set as `--router-balance-abs-threshold`. Since sgl-router uses cache-aware routing by default, it may cause uneven request distribution. You can set `--router-balance-abs-threshold 0` to force balanced distribution, but this may affect prefix cache hit rate in multi-turn conversation scenarios.
 
 For details on some of SGLang's customizations and the principles behind how slime incorporates SGLang, please see the "How to Use SGLang" section.
 
@@ -176,14 +186,82 @@ Additionally, we provide a `metadata_key`, which defaults to `"metadata"`. When 
     - `gspo` ([https://arxiv.org/abs/2507.18071](https://arxiv.org/abs/2507.18071))
     - `reinforce_plus_plus` and `reinforce_plus_plus_baseline` ([https://arxiv.org/abs/2501.03262](https://arxiv.org/abs/2501.03262))
     - `ppo` ([https://arxiv.org/abs/1707.06347](https://arxiv.org/abs/1707.06347))
-- `--calculate-per-token-loss`: By default, Slime calculates loss on a per-sample basis, i.e., `mean(sum(sample_i) / len(sample_i))`. Enable this flag to calculate loss on a per-token basis, i.e., `sum(sum(sample_i)) / sum(len(sample_i))`.
+    - `on_policy_distillation`
+- `--calculate-per-token-loss`: By default, slime calculates loss on a per-sample basis, i.e., `mean(sum(sample_i) / len(sample_i))`. Enable this flag to calculate loss on a per-token basis, i.e., `sum(sum(sample_i)) / sum(len(sample_i))`.
 - `--use-tis`: Enable this setting to use TIS (Truncated Importance Sampling) (https://fengyao.notion.site/off-policy-rl).
+- `--true-on-policy-mode`: Enable True On-Policy mode, which strictly ensures that data is generated by the current policy during training.
+
+#### GRPO Algorithm
+
+GRPO (Group Relative Policy Optimization) is an RL algorithm proposed in DeepSeek-Math. Its core idea is to compute advantage through intra-group relative comparisons, eliminating the need for a separate critic model.
+
+To use GRPO, set:
+
+```bash
+--advantage-estimator grpo
+```
+
+Key features of GRPO:
+
+- **No Critic Model Required**: GRPO samples multiple responses for the same prompt and estimates advantage by computing relative rewards within the group, avoiding the overhead of training and maintaining a critic model.
+- **Resource Efficient**: Since no critic model is needed, GPU resources can be fully utilized for actor training and inference.
+- **Simple to Use**: Easy configuration - just set `--advantage-estimator grpo`.
+
+Related parameters:
+
+- `--n-samples-per-prompt`: Number of responses sampled per prompt for intra-group comparison.
+- `--normalize-advantages`: Whether to normalize advantages.
+- `--eps-clip`: PPO-style clip range.
+
+#### PPO Algorithm
+
+PPO (Proximal Policy Optimization) is a classic RL algorithm that uses a critic model to estimate the value function for computing advantages.
+
+To use PPO, set:
+
+```bash
+--advantage-estimator ppo
+```
+
+**Note: In PPO, the Critic and Actor request GPUs in parallel**, which should be considered when allocating resources. Specifically:
+
+- The critic model occupies a separate set of GPUs, independent from the actor's GPU resources.
+- You can configure critic resources using `--critic-num-nodes` and `--critic-num-gpus-per-node`.
+- If critic resource parameters are not configured, the same resource configuration as the actor will be used by default.
+
+Cluster resource allocation example:
+
+```bash
+# Actor uses 1 node, 4 GPUs
+--actor-num-nodes 1
+--actor-num-gpus-per-node 4
+
+# Critic uses 1 node, 4 GPUs (parallel to Actor)
+--critic-num-nodes 1
+--critic-num-gpus-per-node 4
+
+# Rollout uses 8 GPUs
+--rollout-num-gpus 8
+```
+
+With the above configuration, a total of `4 (actor) + 4 (critic) + 8 (rollout) = 16` GPUs are required.
+
+PPO-related parameters:
+
+- `--critic-load`: Checkpoint path for the critic model.
+- `--critic-save`: Save path for the critic model.
+- `--critic-lr`: Learning rate for the critic model.
+- `--critic-lr-warmup-iters`: Number of warmup steps for the critic model.
+- `--num-critic-only-steps`: Number of steps to train only the critic at the beginning of training.
+- `--eps-clip`: PPO clip range.
+- `--value-clip`: Clip range for value loss.
+- `--kl-coef`: KL penalty coefficient for reward shaping.
 
 ## Custom Rollout Function
 
 slime supports customizing data generation (rollout) to various degrees.
 
-  - By default, it uses the `generate_rollout` function from [slime/rollout/sglang\_example.py](../../slime/rollout/sglang_rollout.py) for data generation. This file implements an asynchronous (asyncio) data generation flow based on SGLang and supports features like dynamic sampling and partial rollout.
+  - By default, it uses the `generate_rollout` function from [slime/rollout/sglang_rollout.py](https://github.com/THUDM/slime/blob/main/slime/rollout/sglang_rollout.py) for data generation. This file implements an asynchronous (asyncio) data generation flow based on SGLang and supports features like dynamic sampling and partial rollout.
 
   - You can completely replace the `generate_rollout` in sglang\_example.py by using the `--rollout-function-path` parameter. You just need to ensure that the function signature passed via `--rollout-function-path` is as follows:
 
@@ -213,7 +291,7 @@ slime supports customizing data generation (rollout) to various degrees.
 
       - `evaluation`: A boolean indicating if the rollout is for evaluation. You can configure a separate evaluation function using `--eval-function-path`.
 
-      - The returned `Sample` type is defined in [slime/utils/types.py](../../slime/utils/types.py). When implementing, you need to ensure the following fields are correctly set:
+      - The returned `Sample` type is defined in [slime/utils/types.py](https://github.com/THUDM/slime/blob/main/slime/utils/types.py). When implementing, you need to ensure the following fields are correctly set:
 
           - `tokens`: The tokens for the prompt + response.
           - `response_length`: The total length of the response. For multi-turn tasks, this is the length of the tokens remaining after the first-turn prompt.
@@ -254,7 +332,7 @@ slime supports customizing data generation (rollout) to various degrees.
         return sample
     ```
 
-    For a more complete version, please refer to [slime/rollout/sglang\_example.py](../../slime/rollout/sglang_rollout.py).
+    For a more complete version, please refer to [slime/rollout/sglang_rollout.py](https://github.com/THUDM/slime/blob/main/slime/rollout/sglang_rollout.py).
 
   - Sometimes, you may also need to support a custom reward model. This can be configured by setting `--custom-rm-path`.
 
@@ -268,18 +346,18 @@ slime incorporates almost all SGLang parameters by using SGLang's `ServerArgs.ad
 
   - In co-located training and inference, you often need to limit `--mem-fraction-static`. This parameter should be changed to `--sglang-mem-fraction-static`.
   - During training, if you want SGLang to infer beyond the maximum context length specified in the Hugging Face checkpoint's `config.json`, you need to use `--context-length`, which becomes `--sglang-context-length` in slime.
-  - For multi-node large EP inference, you might need `--enable-ep-moe`, `--enable-dp-attention`, `--dp-size`, `--enable-deepep-moe`, etc. These can be passed as `--sglang-enable-ep-moe`, `--sglang-enable-dp-attention`, `--sglang-dp-size`, and `--sglang-enable-deepep-moe` respectively.
+  - For multi-node large EP inference, you might need `--ep-size`, `--enable-dp-attention`, `--dp-size`, `--moe-a2a-backend deepep`, etc. These can be passed as `--sglang-ep-size`, `--sglang-enable-dp-attention`, `--sglang-dp-size`, and `--sglang-moe-a2a-backend deepep` respectively.
 
 Some parameters related to slime's resource scheduling are configured by slime itself, for example:
 
   - `--tp-size` in slime is set using `--rollout-num-gpus-per-engine`.
   - `--model-path` in slime is set using `--hf-checkpoint`.
 
-The way SGLang parameters are integrated into slime can be found in [slime/backends/sglang\_utils/arguments.py](../../slime/backends/sglang_utils/arguments.py).
+The way SGLang parameters are integrated into slime can be found in [slime/backends/sglang_utils/arguments.py](https://github.com/THUDM/slime/blob/main/slime/backends/sglang_utils/arguments.py).
 
 ### How to Use the Router
 
-slime uses [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-router) to manage the SGLang servers during the training process. You can configure the address of the [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-router) using `--sglang-router-ip` and `--sglang-router-port`. If not configured, a router will be started by default within the cluster.
+slime uses [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway) to manage the SGLang servers during the training process. You can configure the address of the [sglang-router](https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway) using `--sglang-router-ip` and `--sglang-router-port`. If not configured, a router will be started by default within the cluster.
 
 After starting, all SGLang servers will register with the router via the `/add_worker` endpoint. When actually generating data, you only need to send HTTP requests to the router, which will perform load balancing and forward the requests to the servers.
 
@@ -291,7 +369,7 @@ slime supports different and lightly modified versions of Megatron by reusing co
 
 ### Parameter Configuration
 
-slime directly imports all parameters of the Megatron in the current environment by using `from megatron.training.arguments import parse_args`. If the version of Megatron you are using has parameters defined outside of `parse_args`, you can configure them by passing them in, similar to how it's done in [train.py](../../train.py), for example:
+slime directly imports all parameters of the Megatron in the current environment by using `from megatron.training.arguments import parse_args`. If the version of Megatron you are using has parameters defined outside of `parse_args`, you can configure them by passing them in, similar to how it's done in [train.py](https://github.com/THUDM/slime/blob/main/train.py), for example:
 
 ```python
 if __name__ == "__main__":

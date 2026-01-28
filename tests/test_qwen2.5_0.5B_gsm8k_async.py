@@ -1,3 +1,4 @@
+import os
 import slime.utils.external_utils.command_utils as U
 
 FEW_GPU = U.get_bool_env_var("SLIME_TEST_FEW_GPU", "1")
@@ -28,7 +29,7 @@ def execute():
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
-        "--rollout-temperature 0.8 "
+        "--rollout-temperature 1 "
         "--over-sampling-batch-size 64 "
         "--dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 256 "
@@ -124,4 +125,6 @@ def execute():
 
 if __name__ == "__main__":
     prepare()
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
     execute()

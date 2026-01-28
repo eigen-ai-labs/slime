@@ -42,7 +42,7 @@ ROLLOUT_ARGS=(
    --rollout-batch-size 128
    --n-samples-per-prompt 8
    --rollout-max-response-len 32768
-   --rollout-temperature 0.8
+   --rollout-temperature 1
 
    --over-sampling-batch-size 256
    --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
@@ -57,7 +57,7 @@ EVAL_ARGS=(
    --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl
    --n-samples-per-eval-prompt 8
    --eval-max-response-len 32768
-   --eval-top-p 0.7
+   --eval-top-p 1
 )
 
 PERF_ARGS=(
@@ -119,10 +119,9 @@ SGLANG_ARGS=(
 
    # mtp
    --sglang-speculative-algorithm EAGLE
-   --sglang-speculative-num-steps 1
+   --sglang-speculative-num-steps 2
    --sglang-speculative-eagle-topk 1
-   --sglang-speculative-num-draft-tokens 2
-   --sglang-enable-draft-weights-cpu-backup
+   --sglang-speculative-num-draft-tokens 3
 
 )
 
@@ -189,7 +188,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-nodes 8 \
    --actor-num-gpus-per-node 8 \
    --colocate \
-   --save-debug-rollout-data /mnt/zhuzilin/github-slime/data.pt \
+   --save-debug-rollout-data data.pt \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \

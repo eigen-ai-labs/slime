@@ -10,7 +10,7 @@
 1.  **High-Performance Training**: Supports efficient training in various modes by connecting Megatron with SGLang;
 2.  **Flexible Data Generation**: Enables arbitrary training data generation workflows through custom data generation interfaces and server-based engines.
 
-slime is the RL-framework behind [GLM-4.5](https://z.ai/blog/glm-4.5) and [GLM-4.6](https://z.ai/blog/glm-4.6) and apart from models from Z.ai, we also supports the following models:
+slime is the RL-framework behind [GLM-4.7](https://z.ai/blog/glm-4.7), [GLM-4.6](https://z.ai/blog/glm-4.6), [GLM-4.5](https://z.ai/blog/glm-4.5) and apart from models from Z.ai, we also supports the following models:
 - Qwen3 series (Qwen3Next, Qwen3MoE, Qwen3), Qwen2.5 series;
 - DeepSeek V3 series (DeepSeek V3, V3.1, DeepSeek R1);
 - Llama 3.
@@ -66,6 +66,10 @@ slime has powered several novel research projects and production systems. Here a
 ### 🚀 APRIL: Accelerating RL Training with Active Partial Rollouts
 
 [**APRIL**](https://github.com/RLsys-Foundation/APRIL) introduces a system-level optimization that seamlessly integrates with slime to accelerate the rollout generation phase in RL training. By intelligently over-provisioning requests and actively managing partial completions, APRIL addresses the long-tail generation bottleneck that typically consumes over 90% of RL training time.
+
+### 🏟️ qqr: Scaling Open-Ended Agents with ArenaRL & MCP
+
+[**qqr**](https://github.com/Alibaba-NLP/qqr) (a.k.a. hilichurl) is a lightweight extension for slime designed to evolve open-ended agents. It implements the **ArenaRL** algorithm to tackle discriminative collapse through tournament-based relative ranking (**e.g., Seeded Single-Elimination, Round-Robin**) and seamlessly integrates the **Model Context Protocol (MCP)**. qqr leverages slime's high-throughput training capabilities to enable scalable, distributed evolution of agents in standardized, decoupled tool environments.
 
 These projects showcase slime's versatility—from training code-generation models to optimizing RL training systems—making it a powerful foundation for both research and production deployments.
 
