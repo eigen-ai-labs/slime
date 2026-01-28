@@ -57,7 +57,7 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 1
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -121,7 +121,7 @@ CUSTOM_ARGS=(
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 
 # If you want more or less GPUs, change this parameter
-NUM_GPUS=2
+NUM_GPUS=1
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265 --temp-dir /root/shared/ray_temp 
 
 RUNTIME_ENV_JSON="{

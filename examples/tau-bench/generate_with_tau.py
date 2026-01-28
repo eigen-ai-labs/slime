@@ -23,16 +23,18 @@ logger = logging.getLogger(__name__)
 TAU_CONFIGS = {
     "env": "retail",  # Select between ["retail", "airline"]
     "agent": "tool-calling",  # Select between ["tool-calling", "act", "react", "few-shot"]
-    "user_model": "gemini-2.5-flash-lite",  # Cheap Model for user simulator
+    "user_model": "google/gemini-3-flash-preview",  # OpenRouter model for user simulator
     "task_split": "train",  # Select between ["train", "test", "dev"] for retail
     "user_strategy": "llm",  # Select between ["llm", "react", "verify", "reflection"]
     "model_provider": "auto_router",  # Unused, required
     "model": "qwen3-4b",  # Unused, required
-    "user_model_provider": "gemini",
+    "user_model_provider": "openai",  # Using OpenAI-compatible API (OpenRouter)
 }
-# Replace with your actual API key for user sim
-GEMINI_API_KEY = "NONE"
-os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+# Replace with your actual OpenRouter API key for user sim
+# TODO: tau-bench needs to support OPENAI_API_BASE env var. If it uses OPENAI_BASE_URL instead, adjust accordingly.
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "NONE")
+os.environ["OPENAI_API_KEY"] = OPENROUTER_API_KEY
+os.environ["OPENAI_API_BASE"] = "https://openrouter.ai/api/v1"
 tau_config = RunConfig(**TAU_CONFIGS)
 
 
