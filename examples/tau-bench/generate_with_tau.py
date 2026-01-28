@@ -23,20 +23,18 @@ logger = logging.getLogger(__name__)
 TAU_CONFIGS = {
     "env": "retail",  # Select between ["retail", "airline"]
     "agent": "tool-calling",  # Select between ["tool-calling", "act", "react", "few-shot"]
-    "user_model": "google/gemini-3-flash-preview",  # OpenRouter model for user simulator
+    "user_model": "openrouter/google/gemini-3-flash-preview",  # OpenRouter model for user simulator
     "task_split": "train",  # Select between ["train", "test", "dev"] for retail
     "user_strategy": "llm",  # Select between ["llm", "react", "verify", "reflection"]
     "model_provider": "auto_router",  # Unused, required
     "model": "qwen3-4b",  # Unused, required
-    "user_model_provider": "openai",  # Using OpenAI-compatible API (OpenRouter)
+    "user_model_provider": "openrouter",  # Use LiteLLM's OpenRouter provider
 }
 # Replace with your actual OpenRouter API key for user sim
-# TODO: tau-bench uses litellm for LLM calls. We are not sure about litellm's feasibility with OpenRouter right now.
-#       Need to investigate tau-bench python lib to see how it handles the openai provider and base URL config.
-#       Check if OPENAI_API_BASE or OPENAI_BASE_URL is used, and whether litellm supports OpenRouter properly.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "NONE")
-os.environ["OPENAI_API_KEY"] = OPENROUTER_API_KEY
-os.environ["OPENAI_API_BASE"] = "https://openrouter.ai/api/v1"
+OPENROUTER_API_BASE = os.environ.get("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+os.environ["OPENROUTER_API_KEY"] = OPENROUTER_API_KEY
+os.environ["OPENROUTER_API_BASE"] = OPENROUTER_API_BASE
 tau_config = RunConfig(**TAU_CONFIGS)
 
 

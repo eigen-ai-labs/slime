@@ -42,21 +42,21 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 
 ## Running the Script
 
-You need to configure your litellm API in `generate_with_tau.py` for user simulation:
+You need to configure your LiteLLM OpenRouter settings in `generate_with_tau.py` for user simulation:
 
 ```python
 TAU_CONFIGS = {
     "env": "retail",  # Select between ["retail", "airline"]
     "agent": "tool-calling",  # Select between ["tool-calling", "act", "react", "few-shot"], only tool-calling implemented for now
-    "user_model": "gemini-2.0-flash-lite",  # Cheap Model for user simulator
-    "user_model_provider": "gemini",
+    "user_model": "openrouter/google/gemini-3-flash-preview",  # OpenRouter model for user simulator
+    "user_model_provider": "openrouter",
     "task_split": "train",  # Select between ["train", "test", "dev"] for retail, ["test"] for airline
     "user_strategy": "llm",  # Select between ["llm", "react", "verify", "reflection"]
     "model_provider": "auto_router", # Unused, required
     "model": "qwen3-4b", # Unused, reqired
 }
-# Replace with your actual API key for user sim    
-GEMINI_API_KEY = "YOUR KEY" 
+# Replace with your actual OpenRouter API key for user sim
+OPENROUTER_API_KEY = "YOUR KEY"
 ```
 
 And run:
