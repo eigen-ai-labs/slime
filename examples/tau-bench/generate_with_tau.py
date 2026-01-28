@@ -31,7 +31,9 @@ TAU_CONFIGS = {
     "user_model_provider": "openai",  # Using OpenAI-compatible API (OpenRouter)
 }
 # Replace with your actual OpenRouter API key for user sim
-# TODO: tau-bench needs to support OPENAI_API_BASE env var. If it uses OPENAI_BASE_URL instead, adjust accordingly.
+# TODO: tau-bench uses litellm for LLM calls. We are not sure about litellm's feasibility with OpenRouter right now.
+#       Need to investigate tau-bench python lib to see how it handles the openai provider and base URL config.
+#       Check if OPENAI_API_BASE or OPENAI_BASE_URL is used, and whether litellm supports OpenRouter properly.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "NONE")
 os.environ["OPENAI_API_KEY"] = OPENROUTER_API_KEY
 os.environ["OPENAI_API_BASE"] = "https://openrouter.ai/api/v1"
