@@ -3,18 +3,21 @@ LLM-as-a-Judge Reward Model for RL training.
 
 Implements reward computation using an LLM to evaluate response quality:
 - Supports OpenAI-compatible APIs (OpenAI, Anthropic, vLLM, etc.)
-- Flexible scoring criteria via prompt templates
+- Flexible scoring criteria via prompt templates (rubrics)
 - Binary or scaled reward output
 
 Example metadata format:
 {
     "rm_type": "llm_judge",
-    "judge_model": "gpt-4o-mini",
-    "judge_prompt": "Rate the response quality from 0 to 1...",
-    "judge_criteria": ["accuracy", "clarity", "completeness"],
+    "rubrics": "Rate 0-1 for accuracy and clarity",  # Evaluation criteria
+    "judge_model": "gpt-4o-mini",  # Optional, defaults to gpt-4o-mini
     "reference_answer": "Optional reference for comparison",
     "judge_api_base": "https://api.openai.com/v1"  # Optional
 }
+
+Alternative field names supported:
+- rubrics OR judge_criteria: Evaluation criteria (rubrics preferred)
+- judge_prompt: Custom prompt template (overrides default)
 """
 
 from __future__ import annotations
@@ -137,9 +140,10 @@ async def compute_llm_judge_reward(
         response: The LLM-generated response to evaluate
         label: Optional query/prompt that generated the response
         metadata: Dictionary containing:
+            - rubrics: Evaluation criteria/rubrics (preferred field)
             - judge_model: Model to use as judge (default: gpt-4o-mini)
             - judge_prompt: Custom prompt template (optional)
-            - judge_criteria: List of evaluation criteria
+            - judge_criteria: Legacy alias for rubrics
             - reference_answer: Optional reference for comparison
             - judge_api_base: API base URL (default: OpenAI)
             - judge_api_key: API key (defaults to env var)
@@ -166,7 +170,9 @@ async def compute_llm_judge_reward(
 
     # Format the prompt
     custom_prompt = metadata.get("judge_prompt")
-    criteria = _format_criteria(metadata.get("judge_criteria"))
+    # Support both "rubrics" (preferred) and "judge_criteria" (legacy)
+    rubrics = metadata.get("rubrics") or metadata.get("judge_criteria")
+    criteria = _format_criteria(rubrics)
     reference = _format_reference_section(metadata.get("reference_answer"))
 
     if custom_prompt:
