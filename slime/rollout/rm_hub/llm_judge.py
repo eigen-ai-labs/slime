@@ -10,7 +10,7 @@ Example metadata format:
 {
     "rm_type": "llm_judge",
     "rubrics": "Rate 0-1 for accuracy and clarity",  # Evaluation criteria
-    "judge_model": "gpt-4o-mini",  # Optional, defaults to gpt-4o-mini
+    "judge_model": "gpt-5-mini-2025-08-07",  # Optional, defaults to gpt-5-mini
     "reference_answer": "Optional reference for comparison",
     "judge_api_base": "https://api.openai.com/v1"  # Optional
 }
@@ -33,7 +33,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # Default configuration
-DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
+DEFAULT_JUDGE_MODEL = "gpt-5-mini-2025-08-07"
 DEFAULT_JUDGE_API_BASE = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_TOKENS = 256
