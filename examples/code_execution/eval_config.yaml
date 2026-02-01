@@ -1,0 +1,47 @@
+# Example evaluation config for Code Execution RM
+#
+# Usage:
+#   This config can be used with the SLIME evaluation framework.
+#   The rm_type: code_execution will use the code execution reward model.
+#
+# Data format:
+#   Each line in the JSONL file should have:
+#   {
+#     "messages": [{"role": "user", "content": "...problem description..."}],
+#     "label": null,
+#     "metadata": {
+#       "rm_type": "code_execution",
+#       "test_type": "STDIN",  # or "FUNCTIONAL"
+#       "test_cases": [
+#         {"input": "...", "output": "..."},
+#         ...
+#       ],
+#       # Optional:
+#       "function_name": "solution",  # for FUNCTIONAL mode
+#       "starter_code": "def solution(x):\n    pass",  # template code
+#       "code_exec_timeout": 5.0,  # override timeout per test
+#       "code_exec_memory_mb": 512  # override memory limit
+#     }
+#   }
+
+eval:
+  defaults:
+    max_response_len: 4096
+    temperature: 0.0
+    top_p: 1.0
+
+  datasets:
+    - name: code_execution_sample
+      path: examples/code_execution/sample_data.jsonl
+      rm_type: code_execution
+      n_samples_per_eval_prompt: 1
+
+    # Example with LiveCodeBench-style data (compressed test cases)
+    # - name: livecodebench
+    #   path: /data/livecodebench/eval.jsonl
+    #   rm_type: code_execution
+    #   n_samples_per_eval_prompt: 8
+    #   max_response_len: 8192
+    #   metadata_overrides:
+    #     code_exec_timeout: 10.0
+    #     code_exec_memory_mb: 1024
