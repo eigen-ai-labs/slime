@@ -201,7 +201,7 @@ async def compute_llm_judge_reward(
         "model": judge_model,
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": DEFAULT_MAX_TOKENS,  # Use max_completion_tokens for newer OpenAI models
-        "temperature": 0.0,  # Deterministic for consistency
+        # Note: temperature omitted for compatibility with newer OpenAI models (o1, gpt-5-mini) that don't support it
     }
 
     # Make API call
