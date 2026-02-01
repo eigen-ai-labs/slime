@@ -113,6 +113,33 @@ reward = await compute_code_execution_reward(response, None, metadata)
 # reward = 1.0 if all tests pass, 0.0 otherwise
 ```
 
+## Training
+
+### Quick Start (2 GPUs)
+
+```bash
+# Set model path
+export HF_CHECKPOINT=/path/to/Qwen3-4B
+
+# Run training
+bash examples/code_execution/run_qwen3_4b_code_exec_simple.sh
+```
+
+### Full Training (8 GPUs)
+
+```bash
+# Modify paths in the script as needed
+bash examples/code_execution/run_qwen3_4b_code_exec.sh
+```
+
+### Key Training Arguments
+
+```bash
+--rm-type code_execution          # Use code execution reward model
+--input-key messages              # Key for input messages in JSONL
+--metadata-key metadata           # Key for metadata (contains test cases)
+```
+
 ## Testing
 
 Run the test script:
@@ -123,9 +150,11 @@ uv run python examples/code_execution/test_rm.py
 
 ## Files
 
-- `sample_data.jsonl` - Sample training data
+- `sample_data.jsonl` - Sample training data (5 coding problems)
 - `eval_config.yaml` - Example evaluation configuration
-- `test_rm.py` - Test script demonstrating usage
+- `test_rm.py` - Test script demonstrating RM usage
+- `run_qwen3_4b_code_exec.sh` - Full training script (8 GPUs)
+- `run_qwen3_4b_code_exec_simple.sh` - Simple training script (2 GPUs)
 
 ## Security
 
