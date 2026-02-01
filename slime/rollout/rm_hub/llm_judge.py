@@ -33,7 +33,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # Default configuration
-DEFAULT_JUDGE_MODEL = "gpt-5-mini-2025-08-07"
+DEFAULT_JUDGE_MODEL = "gpt-4o-mini"  # Use a stable, working model
 DEFAULT_JUDGE_API_BASE = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_TOKENS = 256
