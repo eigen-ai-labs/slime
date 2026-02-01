@@ -62,6 +62,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         from .code_execution import compute_code_execution_reward
 
         return await compute_code_execution_reward(response, label, metadata=metadata)
+    elif rm_type == "llm_judge":
+        from .llm_judge import compute_llm_judge_reward
+
+        return await compute_llm_judge_reward(response, label, metadata=metadata)
     elif rm_type == "random":
         return random.randint(0, 1)
     elif rm_type:
