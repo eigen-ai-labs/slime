@@ -5,14 +5,27 @@ Implements reward computation using an LLM to evaluate response quality:
 - Supports OpenAI-compatible APIs (OpenAI, Anthropic, vLLM, etc.)
 - Flexible scoring criteria via prompt templates (rubrics)
 - Binary or scaled reward output
+- Multi-rubric evaluation with weighted averaging
 
-Example metadata format:
+Example metadata format (single rubrics):
 {
     "rm_type": "llm_judge",
     "rubrics": "Rate 0-1 for accuracy and clarity",  # Evaluation criteria
-    "judge_model": "gpt-5-mini-2025-08-07",  # Optional, defaults to gpt-5-mini
+    "judge_model": "gpt-4o-mini",  # Optional, defaults to gpt-4o-mini
     "reference_answer": "Optional reference for comparison",
     "judge_api_base": "https://api.openai.com/v1"  # Optional
+}
+
+Example metadata format (multi-rubrics):
+{
+    "rm_type": "llm_judge",
+    "judge_model": "gpt-4o-mini",
+    "multi_rubrics": [
+        {"name": "tool_usage", "weight": 0.3, "criteria": "Correct tool selection and usage"},
+        {"name": "task_completion", "weight": 0.4, "criteria": "Successfully completed the task"},
+        {"name": "reasoning", "weight": 0.2, "criteria": "Clear and logical reasoning"},
+        {"name": "efficiency", "weight": 0.1, "criteria": "Minimal steps to complete"},
+    ],
 }
 
 Alternative field names supported:
@@ -22,13 +35,22 @@ Alternative field names supported:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, TypedDict
 
 import aiohttp
+
+
+class RubricConfig(TypedDict, total=False):
+    """Configuration for a single evaluation rubric."""
+
+    name: str  # Rubric identifier
+    weight: float  # Weight for averaging (0.0-1.0)
+    criteria: str  # Evaluation criteria text
 
 logger = logging.getLogger(__name__)
 
@@ -255,5 +277,193 @@ async def compute_llm_judge_reward(
         return 0.0
 
 
-# Alias for consistency
+async def compute_multi_rubric_reward(
+    response: str,
+    label: Any,
+    metadata: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> float | dict[str, float]:
+    """
+    Compute reward using multiple rubrics with weighted averaging.
+
+    This function evaluates the response against multiple criteria in parallel
+    and returns a weighted average of the scores.
+
+    Args:
+        response: The LLM-generated response to evaluate
+        label: Optional query/prompt that generated the response
+        metadata: Dictionary containing:
+            - multi_rubrics: List of RubricConfig dicts with name, weight, criteria
+            - judge_model: Model to use as judge (default: gpt-4o-mini)
+            - judge_api_base: API base URL (default: OpenAI)
+            - judge_api_key: API key (defaults to env var)
+            - query: The original user query (if not in label)
+            - return_breakdown: If True, return dict with per-rubric scores
+
+    Returns:
+        Float score (weighted average) or dict with breakdown if return_breakdown=True
+
+    Example metadata:
+        {
+            "multi_rubrics": [
+                {"name": "accuracy", "weight": 0.5, "criteria": "Factual accuracy"},
+                {"name": "clarity", "weight": 0.3, "criteria": "Clear explanation"},
+                {"name": "completeness", "weight": 0.2, "criteria": "Complete answer"},
+            ],
+            "return_breakdown": True,
+        }
+    """
+    if metadata is None:
+        metadata = {}
+
+    multi_rubrics: list[RubricConfig] = metadata.get("multi_rubrics", [])
+
+    # If no multi_rubrics, fall back to single rubrics evaluation
+    if not multi_rubrics:
+        return await compute_llm_judge_reward(response, label, metadata, timeout)
+
+    # Validate rubrics
+    total_weight = sum(r.get("weight", 1.0) for r in multi_rubrics)
+    if total_weight <= 0:
+        logger.warning("Total rubric weight is 0, returning 0.0")
+        return 0.0
+
+    # Create tasks for parallel evaluation
+    tasks = []
+    rubric_names = []
+
+    for rubric in multi_rubrics:
+        rubric_name = rubric.get("name", "unnamed")
+        rubric_criteria = rubric.get("criteria", "")
+
+        # Create metadata for this specific rubric
+        rubric_metadata = {
+            **metadata,
+            "rubrics": rubric_criteria,
+            # Remove multi_rubrics to avoid recursion
+            "multi_rubrics": None,
+        }
+
+        tasks.append(compute_llm_judge_reward(response, label, rubric_metadata, timeout))
+        rubric_names.append(rubric_name)
+
+    # Execute all evaluations in parallel
+    try:
+        scores = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        logger.error("Multi-rubric evaluation failed: %s", e)
+        return 0.0
+
+    # Process results and compute weighted average
+    weighted_sum = 0.0
+    valid_weight = 0.0
+    score_breakdown = {}
+
+    for i, (rubric, score) in enumerate(zip(multi_rubrics, scores, strict=False)):
+        rubric_name = rubric.get("name", f"rubric_{i}")
+        weight = rubric.get("weight", 1.0)
+
+        if isinstance(score, Exception):
+            logger.warning("Rubric '%s' evaluation failed: %s", rubric_name, score)
+            score_breakdown[rubric_name] = 0.0
+            continue
+
+        if not isinstance(score, (int, float)):
+            logger.warning("Rubric '%s' returned non-numeric score: %s", rubric_name, score)
+            score_breakdown[rubric_name] = 0.0
+            continue
+
+        score_breakdown[rubric_name] = float(score)
+        weighted_sum += float(score) * weight
+        valid_weight += weight
+
+    # Compute final weighted average
+    if valid_weight > 0:
+        final_score = weighted_sum / valid_weight
+    else:
+        final_score = 0.0
+
+    logger.debug(
+        "Multi-rubric scores: %s, weighted average: %.3f",
+        score_breakdown,
+        final_score,
+    )
+
+    # Return breakdown if requested
+    if metadata.get("return_breakdown", False):
+        return {
+            "score": final_score,
+            "breakdown": score_breakdown,
+            "weights": {r.get("name", f"rubric_{i}"): r.get("weight", 1.0) for i, r in enumerate(multi_rubrics)},
+        }
+
+    return final_score
+
+
+async def compute_agent_trajectory_reward(
+    samples: list[Any],
+    metadata: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> float:
+    """
+    Compute reward for an agent trajectory (list of samples).
+
+    This function evaluates the entire trajectory and assigns reward
+    only to the final sample. Designed for multi-step agent workflows.
+
+    Args:
+        samples: List of Sample objects representing the trajectory
+        metadata: Evaluation configuration (same as compute_multi_rubric_reward)
+        timeout: Request timeout
+
+    Returns:
+        Float score for the trajectory
+    """
+    if not samples:
+        return 0.0
+
+    # Get the final sample's response (complete trajectory)
+    final_sample = samples[-1]
+    response = getattr(final_sample, "response", str(final_sample))
+
+    # Get query from first sample or metadata
+    query = None
+    if hasattr(samples[0], "prompt"):
+        prompt = samples[0].prompt
+        if isinstance(prompt, list):
+            # Chat format - find user message
+            for msg in prompt:
+                if msg.get("role") == "user":
+                    query = msg.get("content")
+                    break
+        else:
+            query = prompt
+
+    # Build metadata with query
+    eval_metadata = {**(metadata or {})}
+    if query and "query" not in eval_metadata:
+        eval_metadata["query"] = query
+
+    # Add trajectory context to evaluation
+    trajectory_context = []
+    for i, sample in enumerate(samples):
+        step_info = {
+            "step": i + 1,
+            "has_tool_calls": sample.metadata.get("has_tool_calls", False) if hasattr(sample, "metadata") else False,
+        }
+        trajectory_context.append(step_info)
+
+    eval_metadata["trajectory_steps"] = len(samples)
+    eval_metadata["trajectory_context"] = trajectory_context
+
+    # Use multi-rubric if configured, otherwise single rubric
+    if eval_metadata.get("multi_rubrics"):
+        return await compute_multi_rubric_reward(response, query, eval_metadata, timeout)
+    else:
+        return await compute_llm_judge_reward(response, query, eval_metadata, timeout)
+
+
+# Aliases for consistency
 llm_judge_reward = compute_llm_judge_reward
+multi_rubric_reward = compute_multi_rubric_reward
+agent_trajectory_reward = compute_agent_trajectory_reward
