@@ -1,4 +1,5 @@
 accelerate
+aiohttp  # for LLM judge API calls
 blobfile
 datasets
 httpx[http2]

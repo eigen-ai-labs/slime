@@ -1,0 +1,401 @@
+"""
+MCP Agent Rollout - Single-turn multi-step tool calling with MCP servers.
+
+This module implements an agent rollout workflow that:
+1. Connects to MCP servers to discover available tools
+2. Runs a multi-step agent loop where the LLM can call tools
+3. Returns a list of Samples for each step (for per-step loss calculation)
+
+The workflow is designed to integrate with slime's training pipeline via
+the custom_generate_function_path mechanism.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import logging
+from argparse import Namespace
+from typing import TYPE_CHECKING, Any, Callable
+
+from slime.rollout.mcp import (
+    MCPClientConfig,
+    MCPState,
+    MCPTransport,
+    ToolCall,
+    get_mcp_state,
+)
+from slime.rollout.tool_parser import get_parser
+from slime.utils.http_utils import post
+from slime.utils.misc import load_function
+from slime.utils.processing_utils import load_tokenizer
+from slime.utils.types import Sample
+
+if TYPE_CHECKING:
+    from slime.rollout.tool_parser.base import ToolCallParser
+
+logger = logging.getLogger(__name__)
+
+# Default system prompt template
+DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools.
+
+{tools_section}
+
+When you need to use a tool, wrap your reasoning in <think> tags and the tool call in <tool_call> tags.
+After receiving tool results, you can call more tools or provide your final answer.
+
+Remember:
+- Think step by step before using tools
+- You can make multiple tool calls in sequence
+- Provide a clear final answer when you're done
+"""
+
+
+def build_system_message(
+    tools_openai: list[dict[str, Any]],
+    parser: ToolCallParser,
+    custom_template: str | None = None,
+) -> str:
+    """Build the system message with tool descriptions.
+
+    Args:
+        tools_openai: List of tools in OpenAI format
+        parser: Tool call parser instance
+        custom_template: Optional custom system prompt template
+
+    Returns:
+        Formatted system message string
+    """
+    tools_section = parser.format_tools_for_prompt(tools_openai)
+
+    if custom_template:
+        return custom_template.format(tools_section=tools_section)
+
+    return DEFAULT_SYSTEM_PROMPT.format(tools_section=tools_section)
+
+
+async def generate_single_step(
+    args: Namespace,
+    messages: list[dict[str, Any]],
+    sampling_params: dict[str, Any],
+) -> str:
+    """Generate a single LLM response.
+
+    Args:
+        args: Training arguments
+        messages: Chat messages for the model
+        sampling_params: Sampling parameters
+
+    Returns:
+        Generated text response
+    """
+    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/v1/chat/completions"
+
+    payload = {
+        "model": "default",  # SGLang uses the loaded model
+        "messages": messages,
+        **sampling_params,
+    }
+
+    response = await post(url, payload)
+
+    if "choices" in response and len(response["choices"]) > 0:
+        return response["choices"][0]["message"]["content"]
+
+    logger.error("Unexpected response format: %s", response)
+    return ""
+
+
+async def mcp_agent_loop(
+    args: Namespace,
+    initial_sample: Sample,
+    mcp_state: MCPState,
+    parser: ToolCallParser,
+    sampling_params: dict[str, Any],
+    max_steps: int = 5,
+    system_prompt_template: str | None = None,
+) -> list[Sample]:
+    """Run the multi-step agent loop.
+
+    This function:
+    1. Creates a Sample for each step
+    2. Generates LLM responses and parses tool calls
+    3. Executes tool calls via MCP
+    4. Accumulates the conversation history
+
+    Args:
+        args: Training arguments
+        initial_sample: The starting sample with user query
+        mcp_state: MCP state manager with connected servers
+        parser: Tool call parser
+        sampling_params: Sampling parameters for generation
+        max_steps: Maximum number of agent steps
+        system_prompt_template: Optional custom system prompt
+
+    Returns:
+        List of Samples, one for each step (including final answer)
+    """
+    # Get available tools
+    tools = await mcp_state.get_all_tools()
+    tools_openai = [t.to_openai_format() for t in tools]
+
+    # Build system message
+    system_message = build_system_message(tools_openai, parser, system_prompt_template)
+
+    # Initialize messages
+    # If prompt is already a list (chat format), use it directly
+    if isinstance(initial_sample.prompt, list):
+        # Insert system message at the beginning if not present
+        messages = copy.deepcopy(initial_sample.prompt)
+        if not messages or messages[0].get("role") != "system":
+            messages.insert(0, {"role": "system", "content": system_message})
+        else:
+            # Append tool info to existing system message
+            messages[0]["content"] = messages[0]["content"] + "\n\n" + system_message
+    else:
+        # String prompt - convert to chat format
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": initial_sample.prompt},
+        ]
+
+    samples: list[Sample] = []
+    full_response = ""
+
+    for step in range(max_steps):
+        logger.debug("Agent step %d/%d", step + 1, max_steps)
+
+        # Generate response
+        step_response = await generate_single_step(args, messages, sampling_params)
+
+        if not step_response:
+            logger.warning("Empty response at step %d", step)
+            break
+
+        full_response += step_response
+
+        # Parse for tool calls
+        parse_result = parser.parse(step_response)
+
+        # Create sample for this step
+        step_sample = Sample(
+            group_index=initial_sample.group_index,
+            index=initial_sample.index,
+            prompt=initial_sample.prompt,
+            response=full_response,
+            label=initial_sample.label,
+            reward=0.0,  # Intermediate steps get 0 reward
+            status=Sample.Status.PENDING,
+            metadata={
+                **initial_sample.metadata,
+                "step": step,
+                "has_tool_calls": parse_result.has_tool_calls,
+                "thinking": parse_result.thinking,
+            },
+        )
+
+        # Add assistant message to history
+        messages.append({"role": "assistant", "content": step_response})
+
+        if not parse_result.has_tool_calls:
+            # No tool calls - this is the final answer
+            step_sample.status = Sample.Status.COMPLETED
+            samples.append(step_sample)
+            logger.debug("Agent completed with final answer at step %d", step + 1)
+            break
+
+        # Execute tool calls
+        tool_results = await mcp_state.execute_tool_calls(
+            parse_result.tool_calls,
+            parallel=True,
+        )
+
+        # Add tool results to messages and response
+        for result in tool_results:
+            tool_msg = result.to_message()
+            messages.append(tool_msg)
+
+            # Append tool result to full response
+            result_text = f"\n\n[Tool Result: {result.name}]\n{result.content}"
+            full_response += result_text
+
+        # Update sample with tool results
+        step_sample.metadata["tool_results"] = [
+            {"name": r.name, "content": r.content, "is_error": r.is_error}
+            for r in tool_results
+        ]
+        step_sample.response = full_response
+
+        samples.append(step_sample)
+
+        # Check if any tool had an error
+        if any(r.is_error for r in tool_results):
+            logger.warning("Tool execution error at step %d", step)
+            # Continue anyway - model might handle the error
+
+    # If we hit max_steps without a final answer, mark last sample as truncated
+    if samples and samples[-1].status == Sample.Status.PENDING:
+        samples[-1].status = Sample.Status.TRUNCATED
+
+    return samples
+
+
+def _build_config_from_urls(urls: list[str]) -> list[MCPClientConfig]:
+    """Build MCP configs from a list of URLs.
+
+    Args:
+        urls: List of MCP server URLs (SSE endpoints)
+
+    Returns:
+        List of MCPClientConfig objects
+    """
+    configs = []
+    for i, url in enumerate(urls):
+        # Generate a name based on the URL
+        name = f"Server{i + 1}"
+        # Try to extract a meaningful name from the URL
+        if "://" in url:
+            # e.g., http://localhost:8007/sse -> localhost:8007
+            host_part = url.split("://")[1].split("/")[0]
+            name = f"MCP-{host_part}"
+
+        configs.append(
+            MCPClientConfig(
+                name=name,
+                transport=MCPTransport.SSE,
+                url=url,
+                concurrency_limit=16,
+                timeout=30.0,
+            )
+        )
+    return configs
+
+
+async def generate_with_mcp(
+    args: Namespace,
+    sample: Sample,
+    sampling_params: dict[str, Any],
+    evaluation: bool = False,
+) -> Sample | list[Sample]:
+    """Custom generate function for MCP agent rollout.
+
+    This function is designed to be used as `custom_generate_function_path`
+    in the slime training configuration.
+
+    Args:
+        args: Training arguments
+        sample: Input sample
+        sampling_params: Sampling parameters
+        evaluation: Whether this is evaluation mode
+
+    Returns:
+        Single Sample (for evaluation) or list of Samples (for training)
+    """
+    # Get or initialize MCP state
+    mcp_config_fn = None
+
+    # Priority: mcp_server_config_path > mcp_server_url
+    if hasattr(args, "mcp_server_config_path") and args.mcp_server_config_path:
+        mcp_config_fn = load_function(args.mcp_server_config_path)
+    elif hasattr(args, "mcp_server_url") and args.mcp_server_url:
+        # Build config from URLs directly
+        urls = args.mcp_server_url if isinstance(args.mcp_server_url, list) else [args.mcp_server_url]
+        mcp_config_fn = lambda: _build_config_from_urls(urls)
+
+    mcp_state = get_mcp_state(config_fn=mcp_config_fn)
+
+    # Ensure MCP is initialized
+    if not mcp_state.is_initialized:
+        await mcp_state.initialize()
+
+    # Get parser
+    parser_type = getattr(args, "mcp_tool_parser", "qwen")
+    parser = get_parser(parser_type)
+
+    # Get max steps
+    max_steps = getattr(args, "mcp_max_steps", 5)
+
+    # Get custom system prompt template
+    system_template = getattr(args, "mcp_system_prompt_template", None)
+
+    # Prepare sampling params for chat completions
+    chat_sampling_params = {
+        "temperature": sampling_params.get("temperature", args.rollout_temperature),
+        "top_p": sampling_params.get("top_p", args.rollout_top_p),
+        "max_tokens": sampling_params.get("max_new_tokens", args.rollout_max_response_len),
+    }
+
+    # Add stop sequences from parser
+    stop_seqs = parser.get_stop_sequences()
+    if stop_seqs:
+        chat_sampling_params["stop"] = stop_seqs
+
+    # Run agent loop
+    samples = await mcp_agent_loop(
+        args=args,
+        initial_sample=sample,
+        mcp_state=mcp_state,
+        parser=parser,
+        sampling_params=chat_sampling_params,
+        max_steps=max_steps,
+        system_prompt_template=system_template,
+    )
+
+    if not samples:
+        # No samples generated - return error sample
+        sample.status = Sample.Status.FAILED
+        sample.response = "Error: Agent loop produced no samples"
+        sample.reward = 0.0
+        return sample
+
+    if evaluation:
+        # For evaluation, return only the final sample
+        final_sample = samples[-1]
+        return final_sample
+
+    # For training, return all samples
+    # The reward will be computed later by the RM
+    return samples
+
+
+def generate_mcp_rollout(
+    args: Namespace,
+    rollout_id: int,
+    data_source: Any,
+    evaluation: bool = False,
+) -> Any:
+    """Main rollout function for MCP agent.
+
+    This function serves as the entry point for the rollout workflow.
+    It integrates with slime's training loop via `rollout_function_path`.
+
+    Args:
+        args: Training arguments
+        rollout_id: Current rollout iteration
+        data_source: Data source for samples
+        evaluation: Whether this is evaluation mode
+
+    Returns:
+        RolloutFnTrainOutput or RolloutFnEvalOutput
+    """
+    # This function delegates to the standard sglang_rollout
+    # but uses generate_with_mcp as the custom generate function
+    from slime.rollout.sglang_rollout import generate_rollout
+
+    # Set the custom generate function path to use our MCP generate
+    original_custom_path = args.custom_generate_function_path
+    args.custom_generate_function_path = "slime.rollout.mcp_agent_rollout:generate_with_mcp"
+
+    try:
+        return generate_rollout(args, rollout_id, data_source, evaluation)
+    finally:
+        # Restore original setting
+        args.custom_generate_function_path = original_custom_path
+
+
+# Async cleanup helper
+async def cleanup_mcp():
+    """Clean up MCP connections."""
+    from slime.rollout.mcp import reset_mcp_state
+
+    await reset_mcp_state()
