@@ -12,23 +12,20 @@ the custom_generate_function_path mechanism.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import logging
 from argparse import Namespace
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from slime.rollout.mcp import (
     MCPClientConfig,
     MCPState,
     MCPTransport,
-    ToolCall,
     get_mcp_state,
 )
 from slime.rollout.tool_parser import get_parser
 from slime.utils.http_utils import post
 from slime.utils.misc import load_function
-from slime.utils.processing_utils import load_tokenizer
 from slime.utils.types import Sample
 
 if TYPE_CHECKING:
@@ -220,10 +217,7 @@ async def mcp_agent_loop(
             full_response += result_text
 
         # Update sample with tool results
-        step_sample.metadata["tool_results"] = [
-            {"name": r.name, "content": r.content, "is_error": r.is_error}
-            for r in tool_results
-        ]
+        step_sample.metadata["tool_results"] = [{"name": r.name, "content": r.content, "is_error": r.is_error} for r in tool_results]
         step_sample.response = full_response
 
         samples.append(step_sample)
@@ -384,7 +378,7 @@ def generate_mcp_rollout(
 
     # Set the custom generate function path to use our MCP generate
     original_custom_path = args.custom_generate_function_path
-    args.custom_generate_function_path = "slime.rollout.mcp_agent_rollout:generate_with_mcp"
+    args.custom_generate_function_path = "slime.rollout.mcp_agent_rollout.generate_with_mcp"
 
     try:
         return generate_rollout(args, rollout_id, data_source, evaluation)
