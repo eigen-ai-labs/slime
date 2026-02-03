@@ -265,6 +265,64 @@ def _build_config_from_urls(urls: list[str]) -> list[MCPClientConfig]:
     return configs
 
 
+def _get_tokenizer(args: Namespace):
+    """Get or create a cached tokenizer instance."""
+    from slime.utils.processing_utils import load_tokenizer
+
+    if not hasattr(_get_tokenizer, "_cache"):
+        _get_tokenizer._cache = {}
+
+    cache_key = args.hf_checkpoint
+    if cache_key not in _get_tokenizer._cache:
+        _get_tokenizer._cache[cache_key] = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+    return _get_tokenizer._cache[cache_key]
+
+
+def _finalize_sample_tokens(args: Namespace, sample: Sample) -> None:
+    """Tokenize sample prompt and response, setting tokens and response_length.
+
+    This function ensures the sample has proper token information for training.
+    It tokenizes the prompt and full conversation to compute response_length.
+
+    Args:
+        args: Training arguments
+        sample: Sample to finalize (modified in place)
+    """
+    tokenizer = _get_tokenizer(args)
+
+    # Build the full text: prompt + response
+    if isinstance(sample.prompt, list):
+        # Chat format prompt - apply chat template
+        prompt_text = tokenizer.apply_chat_template(
+            sample.prompt,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        # String prompt
+        prompt_text = sample.prompt
+
+    full_text = prompt_text + sample.response
+
+    # Tokenize prompt and full text
+    prompt_tokens = tokenizer.encode(prompt_text, add_special_tokens=False)
+    full_tokens = tokenizer.encode(full_text, add_special_tokens=False)
+
+    # Set sample fields
+    sample.tokens = full_tokens
+    sample.response_length = len(full_tokens) - len(prompt_tokens)
+
+    # Ensure response_length is at least 1 to avoid padding errors
+    if sample.response_length <= 0:
+        logger.warning(
+            "Sample has non-positive response_length=%d, setting to 1. prompt_tokens=%d, full_tokens=%d",
+            sample.response_length,
+            len(prompt_tokens),
+            len(full_tokens),
+        )
+        sample.response_length = max(1, sample.response_length)
+
+
 async def generate_with_mcp(
     args: Namespace,
     sample: Sample,
@@ -341,6 +399,10 @@ async def generate_with_mcp(
         sample.response = "Error: Agent loop produced no samples"
         sample.reward = 0.0
         return sample
+
+    # Finalize all samples with proper token information
+    for s in samples:
+        _finalize_sample_tokens(args, s)
 
     if evaluation:
         # For evaluation, return only the final sample
