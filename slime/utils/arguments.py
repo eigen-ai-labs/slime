@@ -470,6 +470,48 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
                 help="Address and ports of the external engines.",
             )
+
+            # MCP Agent Rollout arguments
+            parser.add_argument(
+                "--mcp-server-url",
+                type=str,
+                default=None,
+                nargs="+",
+                help=(
+                    "URL(s) of MCP server(s) to connect to. "
+                    "This is the simplest way to use MCP - just provide the SSE URL(s). "
+                    "Example: --mcp-server-url http://localhost:8007/sse "
+                    "For multiple servers: --mcp-server-url http://localhost:8007/sse http://localhost:8008/sse"
+                ),
+            )
+            parser.add_argument(
+                "--mcp-server-config-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to the MCP server configuration function (module:function). "
+                    "Use this for advanced configurations with custom settings per server. "
+                    "Example: examples.mcp_agent.config:mcp_server_config_fn"
+                ),
+            )
+            parser.add_argument(
+                "--mcp-max-steps",
+                type=int,
+                default=5,
+                help="Maximum number of tool-calling steps per query for MCP agent.",
+            )
+            parser.add_argument(
+                "--mcp-tool-parser",
+                type=str,
+                default="qwen",
+                help="Tool call parser type for MCP agent. Currently supports: 'qwen'.",
+            )
+            parser.add_argument(
+                "--mcp-system-prompt-template",
+                type=str,
+                default=None,
+                help="Custom system prompt template for MCP agent. Use {tools_section} placeholder for tool descriptions.",
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):

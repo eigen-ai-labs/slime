@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from slime.rollout.mcp import (
     MCPClientConfig,
     MCPState,
+    MCPTransport,
     ToolCall,
     get_mcp_state,
 )
@@ -239,6 +240,37 @@ async def mcp_agent_loop(
     return samples
 
 
+def _build_config_from_urls(urls: list[str]) -> list[MCPClientConfig]:
+    """Build MCP configs from a list of URLs.
+
+    Args:
+        urls: List of MCP server URLs (SSE endpoints)
+
+    Returns:
+        List of MCPClientConfig objects
+    """
+    configs = []
+    for i, url in enumerate(urls):
+        # Generate a name based on the URL
+        name = f"Server{i + 1}"
+        # Try to extract a meaningful name from the URL
+        if "://" in url:
+            # e.g., http://localhost:8007/sse -> localhost:8007
+            host_part = url.split("://")[1].split("/")[0]
+            name = f"MCP-{host_part}"
+
+        configs.append(
+            MCPClientConfig(
+                name=name,
+                transport=MCPTransport.SSE,
+                url=url,
+                concurrency_limit=16,
+                timeout=30.0,
+            )
+        )
+    return configs
+
+
 async def generate_with_mcp(
     args: Namespace,
     sample: Sample,
@@ -261,8 +293,14 @@ async def generate_with_mcp(
     """
     # Get or initialize MCP state
     mcp_config_fn = None
+
+    # Priority: mcp_server_config_path > mcp_server_url
     if hasattr(args, "mcp_server_config_path") and args.mcp_server_config_path:
         mcp_config_fn = load_function(args.mcp_server_config_path)
+    elif hasattr(args, "mcp_server_url") and args.mcp_server_url:
+        # Build config from URLs directly
+        urls = args.mcp_server_url if isinstance(args.mcp_server_url, list) else [args.mcp_server_url]
+        mcp_config_fn = lambda: _build_config_from_urls(urls)
 
     mcp_state = get_mcp_state(config_fn=mcp_config_fn)
 

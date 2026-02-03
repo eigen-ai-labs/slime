@@ -2,6 +2,25 @@
 
 This example demonstrates how to train an agent with multi-step tool calling capabilities using MCP (Model Context Protocol) servers.
 
+## Quick Start (Simplest Way)
+
+Just provide the MCP server URL directly:
+
+```bash
+python -m slime.train \
+    --rollout-function-path="slime.rollout.mcp_agent_rollout:generate_mcp_rollout" \
+    --mcp-server-url http://localhost:8007/sse \
+    # ... other training args
+```
+
+For multiple MCP servers:
+```bash
+python -m slime.train \
+    --rollout-function-path="slime.rollout.mcp_agent_rollout:generate_mcp_rollout" \
+    --mcp-server-url http://localhost:8007/sse http://localhost:8008/sse \
+    # ... other training args
+```
+
 ## Overview
 
 The MCP Agent Rollout enables:
@@ -72,14 +91,26 @@ Your dataset should have prompts that benefit from tool use. The metadata can in
 
 ## Training
 
-### Basic Usage
+### Basic Usage (Simple URL)
 
 ```bash
 python -m slime.train \
-    --rollout_function_path="slime.rollout.mcp_agent_rollout:generate_mcp_rollout" \
-    --mcp_server_config_path="examples.mcp_agent.config:mcp_server_config_fn" \
-    --mcp_max_steps=5 \
-    --mcp_tool_parser="qwen" \
+    --rollout-function-path="slime.rollout.mcp_agent_rollout:generate_mcp_rollout" \
+    --mcp-server-url http://localhost:8007/sse \
+    --mcp-max-steps 5 \
+    # ... other training args
+```
+
+### Advanced Usage (Config File)
+
+For more control over MCP server settings:
+
+```bash
+python -m slime.train \
+    --rollout-function-path="slime.rollout.mcp_agent_rollout:generate_mcp_rollout" \
+    --mcp-server-config-path="examples.mcp_agent.config:mcp_server_config_fn" \
+    --mcp-max-steps 5 \
+    --mcp-tool-parser qwen \
     # ... other training args
 ```
 
@@ -87,10 +118,13 @@ python -m slime.train \
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--mcp_server_config_path` | Path to config function (module:function) | Required |
-| `--mcp_max_steps` | Maximum tool-calling steps per query | 5 |
-| `--mcp_tool_parser` | Parser for tool calls (currently: "qwen") | "qwen" |
-| `--mcp_system_prompt_template` | Custom system prompt template | Built-in |
+| `--mcp-server-url` | Direct URL(s) to MCP server(s) - simplest way | None |
+| `--mcp-server-config-path` | Path to config function for advanced setup | None |
+| `--mcp-max-steps` | Maximum tool-calling steps per query | 5 |
+| `--mcp-tool-parser` | Parser for tool calls (currently: "qwen") | "qwen" |
+| `--mcp-system-prompt-template` | Custom system prompt template | Built-in |
+
+**Note:** Either `--mcp-server-url` or `--mcp-server-config-path` is required. Use `--mcp-server-url` for quick setup, or `--mcp-server-config-path` for advanced configurations (custom timeouts, blocklists, etc.).
 
 ## Tool Call Format
 
