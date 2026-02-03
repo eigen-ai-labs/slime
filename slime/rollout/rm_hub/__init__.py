@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import random
 
 import aiohttp
@@ -12,6 +13,9 @@ from .gpqa import compute_gpqa_reward
 from .math_dapo_utils import compute_score as compute_score_dapo
 from .math_utils import extract_answer as extract_boxed_answer
 from .math_utils import grade_answer_verl
+from .python_reward_adapter import call_reward_function, is_simplified_signature
+
+logger = logging.getLogger(__name__)
 
 
 async def remote_rm(args, sample: Sample):
@@ -30,6 +34,10 @@ async def remote_rm(args, sample: Sample):
 async def async_rm(args, sample: Sample, **kwargs):
     if args.custom_rm_path is not None:
         rm_function = load_function(args.custom_rm_path)
+        # Check if using simplified signature (for Agent RL)
+        if is_simplified_signature(rm_function):
+            # Wrap single sample in a list for the adapter
+            return await call_reward_function(rm_function, args, [sample], **kwargs)
         return await rm_function(args, sample, **kwargs)
 
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
@@ -80,8 +88,19 @@ async def batched_async_rm(
     **kwargs,
 ) -> list[int | float]:
     if args.custom_rm_path is not None:
-        # Ensure the custom reward function is implemented in batch mode
         rm_function = load_function(args.custom_rm_path)
+        # Check if using simplified signature (for Agent RL)
+        if is_simplified_signature(rm_function):
+            # For simplified signature, call once with all samples as trajectory
+            # This is the expected behavior for Agent RL where samples represent
+            # steps in a single trajectory
+            reward = await call_reward_function(rm_function, args, samples, **kwargs)
+            # Return the same reward for all samples in the trajectory
+            # (the reward is for the entire trajectory, not individual steps)
+            if isinstance(reward, (int, float)):
+                return [reward] * len(samples)
+            return reward
+        # Traditional batch mode - function expects list of samples
         return await rm_function(args, samples, **kwargs)
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)
