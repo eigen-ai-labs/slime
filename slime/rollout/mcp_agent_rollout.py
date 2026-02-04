@@ -17,12 +17,7 @@ import logging
 from argparse import Namespace
 from typing import TYPE_CHECKING, Any
 
-from slime.rollout.mcp import (
-    MCPClientConfig,
-    MCPState,
-    MCPTransport,
-    get_mcp_state,
-)
+from slime.rollout.mcp import MCPClientConfig, MCPState, MCPTransport, get_mcp_state
 from slime.rollout.tool_parser import get_parser
 from slime.utils.http_utils import post
 from slime.utils.misc import load_function
@@ -157,7 +152,6 @@ async def mcp_agent_loop(
         ]
 
     samples: list[Sample] = []
-    full_response = ""
 
     for step in range(max_steps):
         logger.debug("Agent step %d/%d", step + 1, max_steps)
@@ -169,8 +163,6 @@ async def mcp_agent_loop(
             logger.warning("Empty response at step %d", step)
             break
 
-        full_response += step_response
-
         # Parse for tool calls
         parse_result = parser.parse(step_response)
 
@@ -178,10 +170,10 @@ async def mcp_agent_loop(
         step_sample = Sample(
             group_index=initial_sample.group_index,
             index=initial_sample.index,
-            prompt=initial_sample.prompt,
-            response=full_response,
+            prompt=copy.deepcopy(messages),
+            response=step_response,
             label=initial_sample.label,
-            reward=0.0,  # Intermediate steps get 0 reward
+            reward=0.0,
             status=Sample.Status.PENDING,
             metadata={
                 **initial_sample.metadata,
@@ -207,18 +199,14 @@ async def mcp_agent_loop(
             parallel=True,
         )
 
-        # Add tool results to messages and response
+        # Add tool results to messages
         for result in tool_results:
             tool_msg = result.to_message()
             messages.append(tool_msg)
 
-            # Append tool result to full response
-            result_text = f"\n\n[Tool Result: {result.name}]\n{result.content}"
-            full_response += result_text
-
-        # Update sample with tool results
-        step_sample.metadata["tool_results"] = [{"name": r.name, "content": r.content, "is_error": r.is_error} for r in tool_results]
-        step_sample.response = full_response
+        step_sample.metadata["tool_results"] = [
+            {"name": r.name, "content": r.content, "is_error": r.is_error} for r in tool_results
+        ]
 
         samples.append(step_sample)
 
@@ -230,6 +218,10 @@ async def mcp_agent_loop(
     # If we hit max_steps without a final answer, mark last sample as truncated
     if samples and samples[-1].status == Sample.Status.PENDING:
         samples[-1].status = Sample.Status.TRUNCATED
+
+    # Let the pipeline compute reward for the final step (e.g. LLM judge).
+    if samples:
+        samples[-1].reward = None
 
     return samples
 
@@ -409,8 +401,15 @@ async def generate_with_mcp(
         final_sample = samples[-1]
         return final_sample
 
-    # For training, return all samples
-    # The reward will be computed later by the RM
+    # Compute reward for the final sample and broadcast to all steps
+    final_sample = samples[-1]
+    if final_sample.reward is None:
+        from slime.rollout.rm_hub import async_rm
+
+        final_reward = await async_rm(args, final_sample)
+        for s in samples:
+            s.reward = final_reward
+
     return samples
 
 
