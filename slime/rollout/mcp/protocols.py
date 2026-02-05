@@ -16,6 +16,7 @@ class MCPTransport(str, Enum):
 
     SSE = "sse"
     STDIO = "stdio"
+    STREAMABLE_HTTP = "streamable_http"
 
 
 @dataclass
@@ -58,6 +59,8 @@ class MCPClientConfig:
 
         if self.transport == MCPTransport.SSE and not self.url:
             raise ValueError("SSE transport requires 'url' to be set")
+        if self.transport == MCPTransport.STREAMABLE_HTTP and not self.url:
+            raise ValueError("Streamable HTTP transport requires 'url' to be set")
         if self.transport == MCPTransport.STDIO and not self.command:
             raise ValueError("Stdio transport requires 'command' to be set")
 

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from slime.utils.misc import SingletonMeta
 
@@ -266,7 +267,7 @@ class MCPState(metaclass=SingletonMeta):
             self._tools_cache = None
             self._initialized = False
 
-    async def __aenter__(self) -> "MCPState":
+    async def __aenter__(self) -> MCPState:
         await self.initialize()
         return self
 

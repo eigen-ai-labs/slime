@@ -52,6 +52,7 @@ class RubricConfig(TypedDict, total=False):
     weight: float  # Weight for averaging (0.0-1.0)
     criteria: str  # Evaluation criteria text
 
+
 logger = logging.getLogger(__name__)
 
 # Default configuration
@@ -177,9 +178,8 @@ async def compute_llm_judge_reward(
     if metadata is None:
         metadata = {}
 
-    # Get configuration from metadata
-    judge_model = metadata.get("judge_model", DEFAULT_JUDGE_MODEL)
-    api_base = metadata.get("judge_api_base", DEFAULT_JUDGE_API_BASE)
+    judge_model = metadata.get("judge_model") or os.environ.get("JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
+    api_base = metadata.get("judge_api_base") or os.environ.get("OPENAI_API_BASE", DEFAULT_JUDGE_API_BASE)
     api_key = metadata.get("judge_api_key") or os.environ.get("OPENAI_API_KEY")
     request_timeout = timeout or metadata.get("judge_timeout", DEFAULT_TIMEOUT)
 

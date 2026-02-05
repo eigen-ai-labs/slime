@@ -53,7 +53,6 @@ class ToolCallParser(ABC):
         Returns:
             ParseResult containing extracted tool calls and metadata
         """
-        pass
 
     @abstractmethod
     def format_tools_for_prompt(self, tools: list[dict[str, Any]]) -> str:
@@ -65,7 +64,6 @@ class ToolCallParser(ABC):
         Returns:
             Formatted string to include in the prompt
         """
-        pass
 
     def get_stop_sequences(self) -> list[str]:
         """Get stop sequences that indicate end of tool call block.

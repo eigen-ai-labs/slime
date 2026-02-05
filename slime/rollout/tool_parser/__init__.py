@@ -36,9 +36,6 @@ def get_parser(parser_type: str = "qwen", **kwargs) -> ToolCallParser:
     }
 
     if parser_type not in parsers:
-        raise ValueError(
-            f"Unknown parser type: {parser_type}. "
-            f"Supported types: {list(parsers.keys())}"
-        )
+        raise ValueError(f"Unknown parser type: {parser_type}. " f"Supported types: {list(parsers.keys())}")
 
     return parsers[parser_type](**kwargs)

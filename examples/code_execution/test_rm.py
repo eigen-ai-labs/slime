@@ -15,7 +15,6 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 # Load modules directly to avoid aiohttp dependency in __init__.py
 project_root = Path(__file__).resolve().parents[2]
@@ -260,7 +259,7 @@ async def simulate_batch_evaluation():
     rewards = await asyncio.gather(*tasks)
 
     print("\nBatch evaluation results:")
-    for i, (sample, reward) in enumerate(zip(samples, rewards)):
+    for i, (sample, reward) in enumerate(zip(samples, rewards, strict=False)):
         print(f"  Sample {i + 1}: reward = {reward}")
         sample.reward = reward
 

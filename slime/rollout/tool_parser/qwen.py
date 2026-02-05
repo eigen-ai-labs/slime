@@ -207,27 +207,29 @@ class QwenToolCallParser(ToolCallParser):
             lines.append(description)
             lines.append("")
             lines.append("Parameters:")
-            lines.append(f"```json")
+            lines.append("```json")
             lines.append(json.dumps(parameters, indent=2))
             lines.append("```")
 
-        lines.extend([
-            "",
-            "# Tool Use Format",
-            "",
-            "To use a tool, output your thinking in <think> tags, then the tool call in <tool_call> tags:",
-            "",
-            "<think>",
-            "Your reasoning about which tool to use and why...",
-            "</think>",
-            "",
-            "<tool_call>",
-            '{"name": "tool_name", "arguments": {"param1": "value1"}}',
-            "</tool_call>",
-            "",
-            "You can make multiple tool calls in one response. "
-            "After receiving tool results, continue reasoning or provide your final answer.",
-        ])
+        lines.extend(
+            [
+                "",
+                "# Tool Use Format",
+                "",
+                "To use a tool, output your thinking in <think> tags, then the tool call in <tool_call> tags:",
+                "",
+                "<think>",
+                "Your reasoning about which tool to use and why...",
+                "</think>",
+                "",
+                "<tool_call>",
+                '{"name": "tool_name", "arguments": {"param1": "value1"}}',
+                "</tool_call>",
+                "",
+                "You can make multiple tool calls in one response. "
+                "After receiving tool results, continue reasoning or provide your final answer.",
+            ]
+        )
 
         return "\n".join(lines)
 
