@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 
 from .protocols import MCPClientConfig, MCPTool, MCPTransport, ToolCall, ToolResult
 
@@ -69,6 +70,8 @@ class MCPClient:
         try:
             if self.config.transport == MCPTransport.SSE:
                 await self._connect_sse()
+            elif self.config.transport == MCPTransport.STREAMABLE_HTTP:
+                await self._connect_streamable_http()
             else:
                 await self._connect_stdio()
 
@@ -85,15 +88,26 @@ class MCPClient:
         assert self._exit_stack is not None
 
         # SSE client returns (read_stream, write_stream)
-        sse_transport = await self._exit_stack.enter_async_context(
-            sse_client(self.config.url)
-        )
+        sse_transport = await self._exit_stack.enter_async_context(sse_client(self.config.url))
         read_stream, write_stream = sse_transport
 
         # Create and initialize session
-        self._session = await self._exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
+        self._session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
+        await self._session.initialize()
+
+    async def _connect_streamable_http(self) -> None:
+        """Connect using Streamable HTTP transport."""
+        assert self.config.url is not None
+        assert self._exit_stack is not None
+
+        # Streamable HTTP client returns (read_stream, write_stream, get_session_id)
+        http_transport = await self._exit_stack.enter_async_context(
+            streamablehttp_client(self.config.url, timeout=self.config.timeout)
         )
+        read_stream, write_stream, _ = http_transport
+
+        # Create and initialize session
+        self._session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
         await self._session.initialize()
 
     async def _connect_stdio(self) -> None:
@@ -107,14 +121,10 @@ class MCPClient:
             env=self.config.env or None,
         )
 
-        stdio_transport = await self._exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
+        stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
         read_stream, write_stream = stdio_transport
 
-        self._session = await self._exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
+        self._session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
         await self._session.initialize()
 
     async def disconnect(self) -> None:
@@ -250,7 +260,7 @@ class MCPClient:
                     is_error=True,
                 )
 
-    async def __aenter__(self) -> "MCPClient":
+    async def __aenter__(self) -> MCPClient:
         await self.connect()
         return self
 

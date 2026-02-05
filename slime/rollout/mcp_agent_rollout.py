@@ -12,6 +12,7 @@ the custom_generate_function_path mechanism.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 from argparse import Namespace
@@ -226,34 +227,48 @@ async def mcp_agent_loop(
     return samples
 
 
-def _build_config_from_urls(urls: list[str]) -> list[MCPClientConfig]:
-    """Build MCP configs from a list of URLs.
+async def _probe_transport(url: str, timeout: float = 10.0) -> MCPTransport:
+    """Probe MCP server to detect transport type (Streamable HTTP or SSE)."""
+    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+    from mcp.client.streamable_http import streamablehttp_client
 
-    Args:
-        urls: List of MCP server URLs (SSE endpoints)
+    for transport_type, client_fn in [
+        (MCPTransport.STREAMABLE_HTTP, lambda: streamablehttp_client(url, timeout=timeout)),
+        (MCPTransport.SSE, lambda: sse_client(url)),
+    ]:
+        try:
+            async with asyncio.timeout(timeout):
+                async with client_fn() as transport:
+                    read, write = transport[0], transport[1]
+                    session = ClientSession(read, write)
+                    async with session:
+                        await session.initialize()
+                        logger.info(f"Detected {transport_type.value} transport for {url}")
+                        return transport_type
+        except Exception as e:
+            logger.debug(f"{transport_type.value} failed for {url}: {e}")
 
-    Returns:
-        List of MCPClientConfig objects
-    """
+    logger.warning(f"Could not detect transport for {url}, defaulting to Streamable HTTP")
+    return MCPTransport.STREAMABLE_HTTP
+
+
+def _build_config_from_urls(
+    urls: list[str], detected_transports: dict[str, MCPTransport] | None = None
+) -> list[MCPClientConfig]:
+    """Build MCP configs from a list of URLs."""
     configs = []
     for i, url in enumerate(urls):
-        # Generate a name based on the URL
-        name = f"Server{i + 1}"
-        # Try to extract a meaningful name from the URL
-        if "://" in url:
-            # e.g., http://localhost:8007/sse -> localhost:8007
-            host_part = url.split("://")[1].split("/")[0]
-            name = f"MCP-{host_part}"
+        name = f"MCP-{url.split('://')[1].split('/')[0]}" if "://" in url else f"Server{i + 1}"
 
-        configs.append(
-            MCPClientConfig(
-                name=name,
-                transport=MCPTransport.SSE,
-                url=url,
-                concurrency_limit=16,
-                timeout=30.0,
-            )
-        )
+        if detected_transports and url in detected_transports:
+            transport = detected_transports[url]
+        elif url.endswith("/sse"):
+            transport = MCPTransport.SSE
+        else:
+            transport = MCPTransport.STREAMABLE_HTTP
+
+        configs.append(MCPClientConfig(name=name, transport=transport, url=url, concurrency_limit=16, timeout=30.0))
     return configs
 
 
@@ -338,13 +353,22 @@ async def generate_with_mcp(
     # Get or initialize MCP state
     mcp_config_fn = None
 
-    # Priority: mcp_server_config_path > mcp_server_url
     if hasattr(args, "mcp_server_config_path") and args.mcp_server_config_path:
         mcp_config_fn = load_function(args.mcp_server_config_path)
     elif hasattr(args, "mcp_server_url") and args.mcp_server_url:
-        # Build config from URLs directly
         urls = args.mcp_server_url if isinstance(args.mcp_server_url, list) else [args.mcp_server_url]
-        mcp_config_fn = lambda: _build_config_from_urls(urls)
+
+        if not hasattr(_build_config_from_urls, "_transport_cache"):
+            _build_config_from_urls._transport_cache = {}
+
+        for url in urls:
+            if url not in _build_config_from_urls._transport_cache:
+                _build_config_from_urls._transport_cache[url] = await _probe_transport(url)
+
+        detected = _build_config_from_urls._transport_cache
+
+        def mcp_config_fn():
+            return _build_config_from_urls(urls, detected)
 
     mcp_state = get_mcp_state(config_fn=mcp_config_fn)
 
