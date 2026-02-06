@@ -414,7 +414,7 @@ async def generate_with_mcp(
         sample.status = Sample.Status.FAILED
         sample.response = "Error: Agent loop produced no samples"
         sample.reward = 0.0
-        return sample
+        return [sample]
 
     # Finalize all samples with proper token information
     for s in samples:
