@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 THINK_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 TOOL_CALL_PATTERN = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
+# Pattern for truncated tool calls (when stop_sequences=["</tool_call>"] truncates the ending)
+# This matches <tool_call> followed by content to the end of string (no closing tag)
+TOOL_CALL_TRUNCATED_PATTERN = re.compile(r"<tool_call>\s*(\{.*)", re.DOTALL)
+
 # Alternative patterns (some models may use slightly different formats)
 TOOL_CALL_ALT_PATTERNS = [
     re.compile(r"```tool_call\n(.*?)```", re.DOTALL),
@@ -90,7 +94,22 @@ class QwenToolCallParser(ToolCallParser):
                     raise ValueError(f"Failed to parse tool call: {match}") from e
                 logger.warning("Skipping malformed tool call: %s (error: %s)", match[:100], e)
 
-        # Try alternative patterns if no tool calls found
+        # Try truncated pattern if no tool calls found (for stop_sequences truncation)
+        if not tool_calls:
+            truncated_match = TOOL_CALL_TRUNCATED_PATTERN.search(text)
+            if truncated_match:
+                try:
+                    # Extract JSON from truncated content
+                    json_content = truncated_match.group(1).strip()
+                    # Try to find complete JSON object
+                    tc = self._parse_tool_call_json(json_content)
+                    if tc is not None:
+                        tool_calls.append(tc)
+                        logger.debug("Parsed truncated tool call: %s", tc.name)
+                except Exception as e:
+                    logger.debug("Failed to parse truncated tool call: %s", e)
+
+        # Try alternative patterns if still no tool calls found
         if not tool_calls:
             for pattern in TOOL_CALL_ALT_PATTERNS:
                 alt_matches = pattern.findall(text)
@@ -106,6 +125,7 @@ class QwenToolCallParser(ToolCallParser):
         content = text
         content = THINK_PATTERN.sub("", content)
         content = TOOL_CALL_PATTERN.sub("", content)
+        content = TOOL_CALL_TRUNCATED_PATTERN.sub("", content)  # Also remove truncated patterns
         for pattern in TOOL_CALL_ALT_PATTERNS:
             content = pattern.sub("", content)
         content = content.strip()
@@ -145,7 +165,10 @@ class QwenToolCallParser(ToolCallParser):
             # Try to extract JSON from text
             json_match = re.search(r"\{.*\}", json_str, re.DOTALL)
             if json_match:
-                data = json.loads(json_match.group())
+                try:
+                    data = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    return None
             else:
                 return None
 
@@ -165,6 +188,10 @@ class QwenToolCallParser(ToolCallParser):
         elif "tool" in data:
             name = data["tool"]
             arguments = data.get("args", data.get("arguments", {}))
+        elif "params" in data or "mode" in data:
+            name = "search"  # Default to search tool for MCP SerpApi
+            arguments = data  # The whole object becomes arguments
+            logger.info("Inferred tool name 'search' from params/mode format")
 
         if not name:
             return None

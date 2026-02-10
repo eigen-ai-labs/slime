@@ -200,9 +200,16 @@ async def mcp_agent_loop(
             parallel=True,
         )
 
-        # Add tool results to messages
+        # Add tool results to messages (with truncation to avoid context overflow)
+        max_tool_result_chars = getattr(args, "mcp_max_tool_result_chars", 8000)
         for result in tool_results:
             tool_msg = result.to_message()
+            # Truncate long tool results to prevent context overflow
+            if len(tool_msg.get("content", "")) > max_tool_result_chars:
+                truncated_content = tool_msg["content"][:max_tool_result_chars]
+                truncated_content += f"\n\n[... truncated, showing first {max_tool_result_chars} chars of {len(tool_msg['content'])} total ...]"
+                tool_msg["content"] = truncated_content
+                logger.debug("Truncated tool result from %d to %d chars", len(result.content), max_tool_result_chars)
             messages.append(tool_msg)
 
         step_sample.metadata["tool_results"] = [
@@ -434,6 +441,53 @@ async def generate_with_mcp(
         final_reward = await async_rm(args, final_sample)
         for s in samples:
             s.reward = final_reward
+
+    # Log multi-step agent completion with sampling
+    # Print once per rollout based on batch_size * n_samples_per_prompt
+    if not hasattr(args, "_mcp_print_counter"):
+        args._mcp_print_counter = 0
+
+    args._mcp_print_counter += 1
+
+    # Calculate print interval: total samples per rollout
+    batch_size = getattr(args, "rollout_batch_size", 32)
+    n_samples = getattr(args, "n_samples_per_prompt", 1)
+    samples_per_rollout = batch_size * n_samples
+    # Print once per rollout (first sample of each rollout)
+    should_print = (args._mcp_print_counter % samples_per_rollout) == 1
+
+    if should_print:
+        # Extract user prompt from the original sample
+        prompt_text = ""
+        if hasattr(sample, "prompt") and sample.prompt:
+            if isinstance(sample.prompt, list):
+                for msg in sample.prompt:
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        prompt_text = msg.get("content", "")[:200]
+                        break
+            else:
+                prompt_text = str(sample.prompt)[:200]
+
+        # Build step-by-step log
+        steps_log = [f"  Prompt: {prompt_text}"]
+        for i, s in enumerate(samples, 1):
+            steps_log.append(f"  Step {i}: {s.response}")
+            # Add tool call results if any
+            tool_results = s.metadata.get("tool_results", [])
+            for tr in tool_results:
+                status = "error" if tr.get("is_error") else "success"
+                steps_log.append(f"    Tool: {tr.get('name', 'unknown')} -> {status}")
+
+        final_reward = samples[-1].reward if samples[-1].reward else 0.0
+        separator = "=" * 60
+        logger.info(
+            "\n%s\nMCP agent completed: %d steps, reward=%.3f\n%s\n%s",
+            separator,
+            len(samples),
+            final_reward,
+            "\n".join(steps_log),
+            separator,
+        )
 
     return samples
 
