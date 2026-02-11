@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
+import threading
 from argparse import Namespace
 from typing import TYPE_CHECKING, Any
 
@@ -212,9 +214,7 @@ async def mcp_agent_loop(
                 logger.debug("Truncated tool result from %d to %d chars", len(result.content), max_tool_result_chars)
             messages.append(tool_msg)
 
-        step_sample.metadata["tool_results"] = [
-            {"name": r.name, "content": r.content, "is_error": r.is_error} for r in tool_results
-        ]
+        step_sample.metadata["tool_results"] = [{"name": r.name, "content": r.content, "is_error": r.is_error} for r in tool_results]
 
         samples.append(step_sample)
 
@@ -260,9 +260,7 @@ async def _probe_transport(url: str, timeout: float = 10.0) -> MCPTransport:
     return MCPTransport.STREAMABLE_HTTP
 
 
-def _build_config_from_urls(
-    urls: list[str], detected_transports: dict[str, MCPTransport] | None = None
-) -> list[MCPClientConfig]:
+def _build_config_from_urls(urls: list[str], detected_transports: dict[str, MCPTransport] | None = None) -> list[MCPClientConfig]:
     """Build MCP configs from a list of URLs."""
     configs = []
     for i, url in enumerate(urls):
@@ -335,6 +333,66 @@ def _finalize_sample_tokens(args: Namespace, sample: Sample) -> None:
             len(full_tokens),
         )
         sample.response_length = max(1, sample.response_length)
+
+
+_rollout_counter = 0
+_rollout_counter_lock = threading.Lock()
+
+
+def _next_rollout_id() -> int:
+    """Return a process-wide auto-incrementing rollout ID (thread-safe)."""
+    global _rollout_counter
+    with _rollout_counter_lock:
+        _rollout_counter += 1
+        return _rollout_counter
+
+
+def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
+    """Save MCP rollout samples as a .pt file for the rollout watcher.
+
+    The watcher (running in the K8s pod) scans ``$OUTPUT_DIR/rollout_data/*.pt``
+    every 15 s, converts them to ``rollouts.jsonl``, and deletes the originals.
+    The backend API then serves the JSONL to the frontend Rollout Explorer.
+    """
+    import torch
+
+    output_dir = getattr(args, "save", None)
+    if not output_dir:
+        return
+
+    rollout_dir = os.path.join(output_dir, "rollout_data")
+    os.makedirs(rollout_dir, exist_ok=True)
+
+    rollout_id = _next_rollout_id()
+
+    serialized: list[dict] = []
+    for s in samples:
+        # Map tool_results → tool_calls for frontend compatibility
+        tool_calls = [
+            {
+                "tool_name": tr.get("name", "unknown"),
+                "tool_input": "",
+                "tool_output": tr.get("content", ""),
+            }
+            for tr in s.metadata.get("tool_results", [])
+        ]
+        serialized.append(
+            {
+                "prompt": s.prompt,
+                "response": s.response,
+                "reward": s.reward if s.reward is not None else 0.0,
+                "status": s.status.name if hasattr(s.status, "name") else str(s.status),
+                "metadata": {
+                    "step": s.metadata.get("step", 0),
+                    "has_tool_calls": s.metadata.get("has_tool_calls", False),
+                    "tool_calls": tool_calls,
+                },
+            }
+        )
+
+    filepath = os.path.join(rollout_dir, f"mcp_rollout_{rollout_id}_{os.getpid()}.pt")
+    torch.save({"samples": serialized, "rollout_id": rollout_id}, filepath)
+    logger.debug("Saved MCP rollout (id=%d, steps=%d) to %s", rollout_id, len(samples), filepath)
 
 
 async def generate_with_mcp(
@@ -441,6 +499,10 @@ async def generate_with_mcp(
         final_reward = await async_rm(args, final_sample)
         for s in samples:
             s.reward = final_reward
+
+    # Save rollout data for the watcher → JSONL → S3 → frontend
+    if getattr(args, "mcp_save_rollouts", False):
+        _save_mcp_rollout(args, samples)
 
     # Log multi-step agent completion with sampling
     # Print once per rollout based on batch_size * n_samples_per_prompt
