@@ -340,10 +340,11 @@ _jsonl_lock = threading.Lock()
 
 
 def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
-    """Append MCP rollout samples directly to rollouts.jsonl.
+    """Append the final step of each MCP trajectory to rollouts.jsonl.
 
-    The sidecar syncs this file to S3, and the backend serves it
-    to the frontend Rollout Explorer via GET /api/jobs/{id}/rollouts.
+    Only saves the last step of each trajectory (COMPLETED/TRUNCATED).
+    The final step's prompt already contains the full conversation history
+    (all tool calls + results), so no information is lost.
     """
     output_dir = getattr(args, "save", None)
     if not output_dir:
@@ -354,35 +355,49 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
 
     rollout_id = getattr(args, "_mcp_rollout_iteration", 0)
 
-    lines: list[str] = []
+    # Group samples by trajectory: samples from the same trajectory share
+    # (group_index, index) but differ in metadata.step.
+    trajectories: dict[tuple, list[Sample]] = {}
     for s in samples:
-        tool_calls = [
-            {
-                "tool_name": tr.get("name", "unknown"),
-                "tool_input": "",
-                "tool_output": tr.get("content", ""),
-            }
-            for tr in s.metadata.get("tool_results", [])
-        ]
+        key = (s.group_index, s.index)
+        trajectories.setdefault(key, []).append(s)
+
+    lines: list[str] = []
+    for _key, steps in trajectories.items():
+        # Take the last step (highest step number) — has full conversation + reward
+        final = max(steps, key=lambda s: s.metadata.get("step", 0))
+
+        # Collect all tool calls across all steps of this trajectory
+        all_tool_calls = []
+        for s in sorted(steps, key=lambda s: s.metadata.get("step", 0)):
+            for tr in s.metadata.get("tool_results", []):
+                all_tool_calls.append(
+                    {
+                        "tool_name": tr.get("name", "unknown"),
+                        "tool_input": "",
+                        "tool_output": tr.get("content", ""),
+                    }
+                )
+
         record = {
             "rollout_id": rollout_id,
-            "prompt": s.prompt,
-            "response": s.response,
-            "reward": s.reward if s.reward is not None else 0.0,
-            "status": s.status.name if hasattr(s.status, "name") else str(s.status),
+            "prompt": final.prompt,
+            "response": final.response,
+            "reward": final.reward if final.reward is not None else 0.0,
+            "status": final.status.name if hasattr(final.status, "name") else str(final.status),
             "metadata": {
-                "step": s.metadata.get("step", 0),
-                "has_tool_calls": s.metadata.get("has_tool_calls", False),
-                "tool_calls": tool_calls,
+                "num_steps": len(steps),
+                "tool_calls": all_tool_calls,
             },
         }
         lines.append(json.dumps(record, ensure_ascii=False))
 
-    jsonl_path = os.path.join(rollout_dir, "rollouts.jsonl")
-    with _jsonl_lock:
-        with open(jsonl_path, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-            f.flush()
+    if lines:
+        jsonl_path = os.path.join(rollout_dir, "rollouts.jsonl")
+        with _jsonl_lock:
+            with open(jsonl_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+                f.flush()
 
 
 async def generate_with_mcp(
