@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import os
 import threading
@@ -335,27 +336,15 @@ def _finalize_sample_tokens(args: Namespace, sample: Sample) -> None:
         sample.response_length = max(1, sample.response_length)
 
 
-_rollout_counter = 0
-_rollout_counter_lock = threading.Lock()
-
-
-def _next_rollout_id() -> int:
-    """Return a process-wide auto-incrementing rollout ID (thread-safe)."""
-    global _rollout_counter
-    with _rollout_counter_lock:
-        _rollout_counter += 1
-        return _rollout_counter
+_jsonl_lock = threading.Lock()
 
 
 def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
-    """Save MCP rollout samples as a .pt file for the rollout watcher.
+    """Append MCP rollout samples directly to rollouts.jsonl.
 
-    The watcher (running in the K8s pod) scans ``$OUTPUT_DIR/rollout_data/*.pt``
-    every 15 s, converts them to ``rollouts.jsonl``, and deletes the originals.
-    The backend API then serves the JSONL to the frontend Rollout Explorer.
+    The sidecar syncs this file to S3, and the backend serves it
+    to the frontend Rollout Explorer via GET /api/jobs/{id}/rollouts.
     """
-    import torch
-
     output_dir = getattr(args, "save", None)
     if not output_dir:
         return
@@ -363,14 +352,10 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
     rollout_dir = os.path.join(output_dir, "rollout_data")
     os.makedirs(rollout_dir, exist_ok=True)
 
-    # Use the rollout iteration number so the frontend groups by training step.
-    # The auto-increment counter is only used for unique filenames.
     rollout_id = getattr(args, "_mcp_rollout_iteration", 0)
-    file_counter = _next_rollout_id()
 
-    serialized: list[dict] = []
+    lines: list[str] = []
     for s in samples:
-        # Map tool_results → tool_calls for frontend compatibility
         tool_calls = [
             {
                 "tool_name": tr.get("name", "unknown"),
@@ -379,23 +364,25 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
             }
             for tr in s.metadata.get("tool_results", [])
         ]
-        serialized.append(
-            {
-                "prompt": s.prompt,
-                "response": s.response,
-                "reward": s.reward if s.reward is not None else 0.0,
-                "status": s.status.name if hasattr(s.status, "name") else str(s.status),
-                "metadata": {
-                    "step": s.metadata.get("step", 0),
-                    "has_tool_calls": s.metadata.get("has_tool_calls", False),
-                    "tool_calls": tool_calls,
-                },
-            }
-        )
+        record = {
+            "rollout_id": rollout_id,
+            "prompt": s.prompt,
+            "response": s.response,
+            "reward": s.reward if s.reward is not None else 0.0,
+            "status": s.status.name if hasattr(s.status, "name") else str(s.status),
+            "metadata": {
+                "step": s.metadata.get("step", 0),
+                "has_tool_calls": s.metadata.get("has_tool_calls", False),
+                "tool_calls": tool_calls,
+            },
+        }
+        lines.append(json.dumps(record, ensure_ascii=False))
 
-    filepath = os.path.join(rollout_dir, f"mcp_rollout_{rollout_id}_{file_counter}_{os.getpid()}.pt")
-    torch.save({"samples": serialized, "rollout_id": rollout_id}, filepath)
-    logger.debug("Saved MCP rollout (iteration=%d, steps=%d) to %s", rollout_id, len(samples), filepath)
+    jsonl_path = os.path.join(rollout_dir, "rollouts.jsonl")
+    with _jsonl_lock:
+        with open(jsonl_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
 
 
 async def generate_with_mcp(
