@@ -363,7 +363,10 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
     rollout_dir = os.path.join(output_dir, "rollout_data")
     os.makedirs(rollout_dir, exist_ok=True)
 
-    rollout_id = _next_rollout_id()
+    # Use the rollout iteration number so the frontend groups by training step.
+    # The auto-increment counter is only used for unique filenames.
+    rollout_id = getattr(args, "_mcp_rollout_iteration", 0)
+    file_counter = _next_rollout_id()
 
     serialized: list[dict] = []
     for s in samples:
@@ -390,9 +393,9 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
             }
         )
 
-    filepath = os.path.join(rollout_dir, f"mcp_rollout_{rollout_id}_{os.getpid()}.pt")
+    filepath = os.path.join(rollout_dir, f"mcp_rollout_{rollout_id}_{file_counter}_{os.getpid()}.pt")
     torch.save({"samples": serialized, "rollout_id": rollout_id}, filepath)
-    logger.debug("Saved MCP rollout (id=%d, steps=%d) to %s", rollout_id, len(samples), filepath)
+    logger.debug("Saved MCP rollout (iteration=%d, steps=%d) to %s", rollout_id, len(samples), filepath)
 
 
 async def generate_with_mcp(
@@ -581,6 +584,9 @@ def generate_mcp_rollout(
     # Set the custom generate function path to use our MCP generate
     original_custom_path = args.custom_generate_function_path
     args.custom_generate_function_path = "slime.rollout.mcp_agent_rollout.generate_with_mcp"
+
+    # Pass rollout iteration number so _save_mcp_rollout can group by iteration
+    args._mcp_rollout_iteration = rollout_id
 
     try:
         return generate_rollout(args, rollout_id, data_source, evaluation)
