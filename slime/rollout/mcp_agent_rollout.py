@@ -597,8 +597,20 @@ def generate_mcp_rollout(
             from slime.rollout.base_types import RolloutFnTrainOutput
 
             if isinstance(output, RolloutFnTrainOutput):
+                # Flatten nested lists: output.samples may contain
+                # list[list[Sample]] where inner lists are MCP multi-step trajectories
+                all_samples: list[Sample] = []
                 for group in output.samples:
-                    _save_mcp_rollout(args, group)
+                    if isinstance(group, list):
+                        for item in group:
+                            if isinstance(item, list):
+                                all_samples.extend(item)
+                            else:
+                                all_samples.append(item)
+                    else:
+                        all_samples.append(group)
+                if all_samples:
+                    _save_mcp_rollout(args, all_samples)
 
         return output
     finally:
