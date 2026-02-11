@@ -379,6 +379,14 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
                     }
                 )
 
+        # Preserve original dataset fields from initial_sample.metadata
+        # (golden_answers, topic, data_source, etc. were spread into step metadata)
+        original_meta = final.metadata or {}
+        data_entry = {}
+        for k in ("golden_answers", "topic", "answer_type", "data_source", "ability"):
+            if k in original_meta:
+                data_entry[k] = original_meta[k]
+
         record = {
             "rollout_id": rollout_id,
             "prompt": final.prompt,
@@ -389,6 +397,7 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
                 "group_index": final.group_index,
                 "num_steps": len(steps),
                 "tool_calls": all_tool_calls,
+                "data_entry": data_entry,
             },
         }
         lines.append(json.dumps(record, ensure_ascii=False))
