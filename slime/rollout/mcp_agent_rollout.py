@@ -481,14 +481,13 @@ async def generate_with_mcp(
         final_sample = samples[-1]
         return final_sample
 
-    # Compute reward for the final sample and broadcast to all steps
+    # Leave reward=None for the upper layer (sglang_rollout.generate_and_rm)
+    # to compute via custom_rm / async_rm / batched_async_rm.
+    # Only broadcast if reward was already set during generation.
     final_sample = samples[-1]
-    if final_sample.reward is None:
-        from slime.rollout.rm_hub import async_rm
-
-        final_reward = await async_rm(args, final_sample)
+    if final_sample.reward is not None:
         for s in samples:
-            s.reward = final_reward
+            s.reward = final_sample.reward
 
     # Save rollout data for the watcher → JSONL → S3 → frontend
     if getattr(args, "mcp_save_rollouts", False):
