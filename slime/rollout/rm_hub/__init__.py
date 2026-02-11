@@ -60,6 +60,14 @@ async def async_rm(args, sample: Sample, **kwargs):
         return 1 if grade_answer_verl(response, label) else 0
     elif rm_type == "f1":
         return f1_score(response, label)[0]
+    elif rm_type == "rule":
+        # Rule-based: check if any golden answer appears in the response
+        golden_answers = metadata.get("golden_answers", [])
+        if golden_answers:
+            resp_lower = response.lower().strip()
+            return 1.0 if any(str(a).lower().strip() in resp_lower for a in golden_answers) else 0.0
+        # Fallback to F1 if no golden_answers
+        return f1_score(response, label)[0] if label else 0.0
     elif rm_type == "gpqa":
         return compute_gpqa_reward(response, label, metadata=metadata)
     elif rm_type == "ifbench":
