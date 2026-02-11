@@ -489,9 +489,9 @@ async def generate_with_mcp(
         for s in samples:
             s.reward = final_sample.reward
 
-    # Save rollout data for the watcher → JSONL → S3 → frontend
-    if getattr(args, "mcp_save_rollouts", False):
-        _save_mcp_rollout(args, samples)
+    # NOTE: Do NOT save rollout here — reward is still None at this point.
+    # Saving happens in generate_mcp_rollout() after generate_rollout() returns
+    # with all rewards computed.
 
     # Log multi-step agent completion with sampling
     # Print once per rollout based on batch_size * n_samples_per_prompt
@@ -575,7 +575,17 @@ def generate_mcp_rollout(
     args._mcp_rollout_iteration = rollout_id
 
     try:
-        return generate_rollout(args, rollout_id, data_source, evaluation)
+        output = generate_rollout(args, rollout_id, data_source, evaluation)
+
+        # Save rollout data AFTER rewards are computed by the upper layer.
+        if getattr(args, "mcp_save_rollouts", False) and not evaluation:
+            from slime.rollout.base_types import RolloutFnTrainOutput
+
+            if isinstance(output, RolloutFnTrainOutput):
+                for group in output.samples:
+                    _save_mcp_rollout(args, group)
+
+        return output
     finally:
         # Restore original setting
         args.custom_generate_function_path = original_custom_path
