@@ -386,6 +386,7 @@ def _save_mcp_rollout(args: Namespace, samples: list[Sample]) -> None:
             "reward": final.reward if final.reward is not None else 0.0,
             "status": final.status.name if hasattr(final.status, "name") else str(final.status),
             "metadata": {
+                "group_index": final.group_index,
                 "num_steps": len(steps),
                 "tool_calls": all_tool_calls,
             },
