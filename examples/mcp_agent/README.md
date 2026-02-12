@@ -255,7 +255,7 @@ Evaluated on the full 1,000-question [SimpleQA Verified](https://www.kaggle.com/
 
 | Model | Base | Correct | Incorrect | Not Attempted | Accuracy (Attempted) | F1 Score |
 |-------|------|--------:|----------:|--------------:|---------------------:|---------:|
-| Qwen3-4B (EigenTrain) | Qwen3-4B-Thinking | 75 | 899 | 26 | 7.70% | 0.0760 |
+| Qwen3-4B (EigenTrain) | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | 75 | 899 | 26 | 7.70% | 0.0760 |
 
 ## Example Output
 
