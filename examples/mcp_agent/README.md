@@ -247,6 +247,16 @@ This loads the training JSONL, normalizes all user messages, and filters out any
 | `--output` | Path to save results CSV | None |
 | `--extra-header` | Extra HTTP headers for test API (repeatable `KEY=VALUE`) | None |
 
+## SimpleQA Verified Benchmark Results (Non-Decontaminated)
+
+> **Note:** These results are **non-decontaminated** — benchmark questions that overlap with training data have NOT been filtered out. Decontaminated scores may differ.
+
+Evaluated on the full 1,000-question [SimpleQA Verified](https://www.kaggle.com/benchmarks/deepmind/simpleqa-verified) dataset. Judge model: GPT-4.1.
+
+| Model | Base | Correct | Incorrect | Not Attempted | Accuracy (Attempted) | F1 Score |
+|-------|------|--------:|----------:|--------------:|---------------------:|---------:|
+| Qwen3-4B (EigenTrain) | Qwen3-4B-Thinking | 75 | 899 | 26 | 7.70% | 0.0760 |
+
 ## Example Output
 
 ```
