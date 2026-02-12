@@ -58,11 +58,11 @@ Our training data (`simpleqa_1k.jsonl`) contains 1,000 examples sourced from the
 
 Decontamination uses exact match after text normalization (lowercase, strip punctuation, collapse whitespace). The `--decontaminate` flag automates this filtering at eval time.
 
-All evaluations use GPT-4.1 as judge. **Tools** = No means plain chat completion without MCP tools. **Decontaminated** = 785 questions after removing 215 that overlap with training data; **Full** = all 1,000 benchmark questions.
+All evaluations use GPT-4.1 as judge. **Tools** = No means plain chat completion without MCP tools. **Subset**: Clean (785) = benchmark questions not in training data; Full (1k) = all 1,000 benchmark questions.
 
-| Model | Base | RL | Tools | Decontaminated | Eval Size | Correct | Incorrect | Not Attempted | Accuracy (Attempted) | F1 Score |
-|-------|------|:--:|:-----:|:--------------:|----------:|--------:|----------:|--------------:|---------------------:|---------:|
-| Qwen3-4B-Thinking-2507 | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | - | No | Yes | 785 | 55 | 702 | 27 | 7.27% | 0.0714 |
-| Qwen3-4B-Thinking-2507 | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | - | No | No | 1000 | 75 | 899 | 26 | 7.70% | 0.0760 |
-| Qwen3-4B + MCP Agent RL (epoch 1) | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | Epoch 1 | No | Yes | 785 | 71 | 686 | 28 | 9.38% | 0.0921 |
+| Model | Base | RL | Tools | Subset | Correct | Incorrect | Not Attempted | Accuracy (Attempted) | F1 Score |
+|-------|------|:--:|:-----:|:------:|--------:|----------:|--------------:|---------------------:|---------:|
+| Qwen3-4B-Thinking-2507 | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | - | No | Clean (785) | 55 | 702 | 27 | 7.27% | 0.0714 |
+| Qwen3-4B-Thinking-2507 | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | - | No | Full (1k) | 75 | 899 | 26 | 7.70% | 0.0760 |
+| Qwen3-4B + MCP Agent RL (epoch 1) | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | Epoch 1 | No | Clean (785) | 71 | 686 | 28 | 9.38% | 0.0921 |
 
