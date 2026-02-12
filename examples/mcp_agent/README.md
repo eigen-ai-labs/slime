@@ -119,5 +119,7 @@ All evaluations use GPT-4.1 as judge. **Tools** = No means plain chat completion
 |------|-------------|
 | `simpleqa_1k.jsonl` | Original training data (1,000 examples from the SimpleQA domain) |
 | `simpleqa_1k_decontaminated.jsonl` | Training data after removing 215 examples that overlap with the benchmark (785 remaining) |
-| `simpleqa_verified_benchmark.py` | Eval script with `--decontaminate` support for fair benchmark evaluation |
+| `simpleqa_verified_benchmark.py` | Plain eval script: direct knowledge test, no tools |
+| `simpleqa_mcp_agent_benchmark.py` | MCP agent eval script: multi-step tool calling + search (standalone, no slime deps) |
+
 
