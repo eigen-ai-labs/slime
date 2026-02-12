@@ -521,6 +521,99 @@ Remember:
 - Provide a clear final answer when you're done
 """
 
+# Training-time system prompt (exact prompt used during Agent RL training with SerpAPI)
+TRAINING_SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools.
+
+# Tools
+
+You have access to the following tools:
+
+## search
+Universal search tool supporting all SerpApi engines and result types.
+
+This tool consolidates weather, stock, and general search functionality into a single interface.
+It processes multiple result types and returns structured JSON output.
+
+Args:
+    params: Dictionary of engine-specific parameters. Common parameters include:
+        - q: Search query (required for most engines)
+        - engine: Search engine to use (default: "google_light")
+        - location: Geographic location filter
+        - num: Number of results to return
+
+    mode: Response mode (default: "complete")
+        - "complete": Returns full JSON response with all fields
+        - "compact": Returns JSON response with metadata fields removed
+
+Returns:
+    A JSON string containing search results or an error message.
+
+Examples:
+    Weather: {"params": {"q": "weather in London", "engine": "google"}, "mode": "complete"}
+    Stock: {"params": {"q": "AAPL stock", "engine": "google"}, "mode": "complete"}
+    General: {"params": {"q": "coffee shops", "engine": "google_light", "location": "Austin, TX"}, "mode": "complete"}
+    Compact: {"params": {"q": "news"}, "mode": "compact"}
+
+Supported engines include (not limited to):
+    - google
+    - google_light
+    - google_flights
+    - google_hotels
+    - google_images
+    - google_news
+    - google_local
+    - google_shopping
+    - google_jobs
+    - bing
+    - yahoo
+    - duckduckgo
+    - youtube_search
+    - baidu
+    - ebay
+
+Engine params are available via resources at serpapi://engines/<engine> (index: serpapi://engines).
+
+Parameters:
+```json
+{
+  "properties": {
+    "params": {
+      "additionalProperties": true,
+      "default": {},
+      "type": "object"
+    },
+    "mode": {
+      "default": "complete",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+```
+
+# Tool Use Format
+
+To use a tool, output your thinking in <think> tags, then the tool call in <tool_call> tags:
+
+<think>
+Your reasoning about which tool to use and why...
+</think>
+
+<tool_call>
+{"name": "tool_name", "arguments": {"param1": "value1"}}
+</tool_call>
+
+You can make multiple tool calls in one response. After receiving tool results, continue reasoning or provide your final answer.
+
+When you need to use a tool, wrap your reasoning in <think> tags and the tool call in <tool_call> tags.
+After receiving tool results, you can call more tools or provide your final answer.
+
+Remember:
+- Think step by step before using tools
+- You can make multiple tool calls in sequence
+- Provide a clear final answer when you're done
+"""
+
 # ============================================================================
 # Clients (initialized in main)
 # ============================================================================
@@ -694,6 +787,7 @@ async def mcp_agent_loop(
     temperature: float = 0.7,
     max_tokens: int = 8192,
     max_tool_chars: int = 8000,
+    system_prompt: str | None = None,
 ) -> dict:
     """Run multi-step agent loop using OpenAI native tool calling.
 
@@ -703,9 +797,10 @@ async def mcp_agent_loop(
     tools = await mcp_state.get_all_tools()
     tools_openai = [t.to_openai_format() for t in tools]
 
-    messages: list[dict] = [
-        {"role": "user", "content": question},
-    ]
+    messages: list[dict] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": question})
     trajectory = []
 
     for step in range(max_steps):
@@ -775,12 +870,13 @@ async def run_task(
     temperature: float,
     max_tokens: int,
     max_tool_chars: int,
+    system_prompt: str | None = None,
 ) -> tuple[int, dict | None, Exception | None]:
     async with sem:
         try:
             q = data_row.get("problem", "")
             gold = data_row.get("answer", "")
-            agent = await mcp_agent_loop(q, mcp_state, max_steps, temperature, max_tokens, max_tool_chars)
+            agent = await mcp_agent_loop(q, mcp_state, max_steps, temperature, max_tokens, max_tool_chars, system_prompt=system_prompt)
             grade = await asyncio.get_event_loop().run_in_executor(None, grade_answer_with_llm, q, gold, agent["predicted_answer"])
             return (
                 idx,
@@ -844,6 +940,7 @@ def parse_args():
     p.add_argument("--parallel", type=int, default=4)
     p.add_argument("--output", default=None)
     p.add_argument("--extra-header", action="append", default=[], metavar="KEY=VALUE")
+    p.add_argument("--training-system-prompt", action="store_true", default=False, help="Use the exact system prompt from Agent RL training (includes SerpAPI tool description)")
     return p.parse_args()
 
 
@@ -863,9 +960,12 @@ async def async_main():
         args.mcp_server_url = [DEFAULT_MCP_SERVER_URL]
         print(f"Using default MCP server: {DEFAULT_MCP_SERVER_URL}")
 
+    system_prompt = TRAINING_SYSTEM_PROMPT if args.training_system_prompt else None
+
     print(f"Test model:  {TEST_MODEL} @ {args.test_base_url or 'OpenAI'}")
     print(f"Judge model: {JUDGE_MODEL} @ {args.judge_base_url or 'OpenAI'}")
     print(f"MCP servers: {args.mcp_server_url}")
+    print(f"System prompt: {'TRAINING' if args.training_system_prompt else 'none (server default)'}")
     print(f"Max steps:   {args.max_steps}  Parallel: {args.parallel}  Temp: {args.temperature}")
     print()
 
@@ -902,7 +1002,7 @@ async def async_main():
 
     # Run
     sem = asyncio.Semaphore(args.parallel)
-    tasks = [run_task(i, row.to_dict(), mcp_state, sem, args.max_steps, args.temperature, args.max_tokens, args.max_tool_result_chars) for i, (_, row) in enumerate(df.iterrows())]
+    tasks = [run_task(i, row.to_dict(), mcp_state, sem, args.max_steps, args.temperature, args.max_tokens, args.max_tool_result_chars, system_prompt=system_prompt) for i, (_, row) in enumerate(df.iterrows())]
 
     results_map = {}
     done = 0
