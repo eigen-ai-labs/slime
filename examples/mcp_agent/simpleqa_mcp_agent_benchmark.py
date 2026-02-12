@@ -907,6 +907,9 @@ async def async_main():
     results_map = {}
     done = 0
     errs = 0
+    n_correct = 0
+    n_incorrect = 0
+    n_not_attempted = 0
     t0 = time.time()
 
     for coro in asyncio.as_completed(tasks):
@@ -918,7 +921,15 @@ async def async_main():
             print(f"[{done}/{total}] ERROR idx={idx}: {err}", flush=True)
         else:
             results_map[idx] = result
-            print(f"[{done}/{total} {rate:.1f}/s] {result['grade_str']:15s} steps={result['num_steps']} | {result['question'][:55]}...", flush=True)
+            n_correct += result["is_correct"]
+            n_incorrect += result["is_incorrect"]
+            n_not_attempted += result["is_not_attempted"]
+            attempted = n_correct + n_incorrect
+            acc = n_correct / attempted if attempted > 0 else 0
+            print(
+                f"[{done}/{total} {rate:.1f}/s] {result['grade_str']:15s} steps={result['num_steps']} | C={n_correct} I={n_incorrect} N={n_not_attempted} acc={acc:.1%} | {result['question'][:50]}...",
+                flush=True,
+            )
 
     await mcp_state.shutdown()
 
