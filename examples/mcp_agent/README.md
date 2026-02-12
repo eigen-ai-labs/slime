@@ -113,3 +113,17 @@ All evaluations use GPT-4.1 as judge. **Tools** = No means plain chat completion
 | Qwen3-4B + MCP Agent RL (epoch 1) | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | Epoch 1 | No | Clean (785) | 71 | 686 | 28 | 9.38% | 0.0921 |
 | Qwen3-4B + MCP Agent RL (epoch 2) | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | Epoch 2 | No | Clean (785) | 58 | 704 | 23 | 7.61% | 0.0750 |
 
+### Observations
+
+- **MCP Agent RL epoch 1** is the best checkpoint, improving factual accuracy from 7.27% to **9.38%** (+29% relative gain) on the clean subset.
+- **Epoch 2 regresses** to 7.61%, close to the base model, suggesting overfitting beyond epoch 1.
+- All results above are **without tools** (plain chat completion). The model is answering from its own knowledge — MCP Agent RL training appears to improve the model's factual recall even without tool access at inference time.
+
+## Data Files
+
+| File | Description |
+|------|-------------|
+| `simpleqa_1k.jsonl` | Original training data (1,000 examples from the SimpleQA domain) |
+| `simpleqa_1k_decontaminated.jsonl` | Training data after removing 215 examples that overlap with the benchmark (785 remaining) |
+| `simpleqa_verified_benchmark.py` | Eval script with `--decontaminate` support for fair benchmark evaluation |
+
