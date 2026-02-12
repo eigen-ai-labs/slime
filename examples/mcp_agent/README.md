@@ -47,6 +47,52 @@ This loads the training JSONL, normalizes all user messages, and filters out any
 | `--output` | Path to save results CSV | None |
 | `--extra-header` | Extra HTTP headers for test API (repeatable `KEY=VALUE`) | None |
 
+## MCP Agent Evaluation (SimpleQA + Tool Calling)
+
+Unlike the plain benchmark above (which tests direct knowledge), the MCP agent benchmark measures how well a model can use **tools** (e.g., SerpAPI web search) to find correct answers via multi-step tool calling.
+
+The script (`simpleqa_mcp_agent_benchmark.py`) is **standalone** — no heavy dependencies (ray, torch) needed. Only requires: `mcp`, `openai`, `kagglehub`, `pandas`.
+
+```bash
+# Default: uses SerpAPI MCP server (same as Agent RL training)
+.venv/bin/python examples/mcp_agent/simpleqa_mcp_agent_benchmark.py \
+  --test-model "your-model-name" \
+  --test-base-url "https://your-endpoint/v1" \
+  --test-api-key "$YOUR_API_KEY" \
+  --decontaminate examples/mcp_agent/simpleqa_1k.jsonl \
+  --parallel 16 \
+  --output results_mcp_decon.csv
+```
+
+### MCP Agent Eval Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--test-model` | Model name | (required) |
+| `--test-base-url` | OpenAI-compatible API base URL | OpenAI default |
+| `--test-api-key` | API key for the test model | env `TEST_API_KEY` |
+| `--judge-api-key` | OpenAI API key for GPT-4.1 judge | env `OPENAI_API_KEY` |
+| `--mcp-server-url` | MCP server URL (repeatable) | SerpAPI |
+| `--max-steps` | Max agent steps (tool call rounds) per question | 10 |
+| `--max-tokens` | Max tokens per generation step | 8192 |
+| `--temperature` | Sampling temperature | 0.7 |
+| `--num-examples` | Number of examples to evaluate | all |
+| `--decontaminate` | Training JSONL for decontamination | None |
+| `--parallel` | Concurrent agent tasks | 4 |
+| `--output` | CSV output path | None |
+
+### Custom MCP Server
+
+```bash
+# Use a different MCP server
+.venv/bin/python examples/mcp_agent/simpleqa_mcp_agent_benchmark.py \
+  --test-model "your-model" \
+  --test-base-url "https://your-endpoint/v1" \
+  --mcp-server-url "https://your-mcp-server.com/mcp" \
+  --parallel 8 \
+  --output results.csv
+```
+
 ## SimpleQA Verified Benchmark Results
 
 ### Why Decontamination?
@@ -65,4 +111,5 @@ All evaluations use GPT-4.1 as judge. **Tools** = No means plain chat completion
 | Qwen3-4B-Thinking-2507 | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | - | No | Clean (785) | 55 | 702 | 27 | 7.27% | 0.0714 |
 | Qwen3-4B-Thinking-2507 | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | - | No | Full (1k) | 75 | 899 | 26 | 7.70% | 0.0760 |
 | Qwen3-4B + MCP Agent RL (epoch 1) | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | Epoch 1 | No | Clean (785) | 71 | 686 | 28 | 9.38% | 0.0921 |
+| Qwen3-4B + MCP Agent RL (epoch 2) | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) | Epoch 2 | No | Clean (785) | 58 | 704 | 23 | 7.61% | 0.0750 |
 
