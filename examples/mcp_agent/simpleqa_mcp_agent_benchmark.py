@@ -565,19 +565,20 @@ def generate_test_chat(
     messages: list[dict],
     temperature: float = 0.7,
     max_tokens: int = 8192,
-    stop: list[str] | None = None,
-) -> str:
+    tools: list[dict] | None = None,
+):
+    """Generate a chat completion. Returns the full message object (not just content)."""
     kwargs: dict[str, Any] = {
         "model": TEST_MODEL,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    if stop:
-        kwargs["stop"] = stop
+    if tools:
+        kwargs["tools"] = tools
     if test_extra_headers:
         kwargs["extra_headers"] = test_extra_headers
-    return test_client.chat.completions.create(**kwargs).choices[0].message.content or ""
+    return test_client.chat.completions.create(**kwargs).choices[0]
 
 
 def grade_answer_with_llm(question: str, target: str, predicted_answer: str) -> str:
@@ -694,53 +695,67 @@ async def mcp_agent_loop(
     max_tokens: int = 8192,
     max_tool_chars: int = 8000,
 ) -> dict:
-    """Run multi-step agent loop. Returns dict with predicted_answer, num_steps, trajectory."""
+    """Run multi-step agent loop using OpenAI native tool calling.
+
+    Uses the `tools` parameter so that SGLang's --tool-call-parser can
+    intercept <tool_call> tags and convert them to OpenAI tool_calls format.
+    """
     tools = await mcp_state.get_all_tools()
     tools_openai = [t.to_openai_format() for t in tools]
-    tools_section = format_tools_for_prompt(tools_openai)
-    system_msg = DEFAULT_SYSTEM_PROMPT.format(tools_section=tools_section)
 
-    messages = [
-        {"role": "system", "content": system_msg},
+    messages: list[dict] = [
         {"role": "user", "content": question},
     ]
     trajectory = []
 
     for step in range(max_steps):
-        resp = generate_test_chat(messages, temperature=temperature, max_tokens=max_tokens, stop=STOP_SEQUENCES)
-        if not resp:
-            break
+        choice = generate_test_chat(messages, temperature=temperature, max_tokens=max_tokens, tools=tools_openai)
+        msg = choice.message
 
-        pr = parse_qwen(resp)
-        rec = {"step": step, "response": resp, "has_tool_calls": pr.has_tool_calls, "tool_results": []}
-        messages.append({"role": "assistant", "content": resp})
+        # Build assistant message for history
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+        if msg.tool_calls:
+            assistant_msg["tool_calls"] = [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in msg.tool_calls]
+        messages.append(assistant_msg)
 
-        if not pr.has_tool_calls:
+        has_tool_calls = bool(msg.tool_calls)
+        rec = {
+            "step": step,
+            "response": msg.content or "",
+            "has_tool_calls": has_tool_calls,
+            "tool_results": [],
+        }
+
+        if not has_tool_calls:
             rec["is_final"] = True
             trajectory.append(rec)
             break
 
-        results = await mcp_state.execute_tool_calls(pr.tool_calls)
+        # Convert OpenAI tool_calls to our ToolCall format and execute via MCP
+        parsed_calls = []
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+            except json.JSONDecodeError:
+                args = {}
+            parsed_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
+
+        results = await mcp_state.execute_tool_calls(parsed_calls)
         for r in results:
-            msg = r.to_message()
-            c = msg.get("content", "")
-            if len(c) > max_tool_chars:
-                msg["content"] = c[:max_tool_chars] + f"\n\n[... truncated {max_tool_chars}/{len(c)} chars ...]"
-            messages.append(msg)
+            content = r.content if isinstance(r.content, str) else str(r.content)
+            if len(content) > max_tool_chars:
+                content = content[:max_tool_chars] + f"\n\n[... truncated {max_tool_chars}/{len(content)} chars ...]"
+            messages.append({"role": "tool", "tool_call_id": r.tool_call_id, "content": content})
             rec["tool_results"].append({"name": r.name, "is_error": r.is_error})
 
         trajectory.append(rec)
 
-    # Extract final answer
+    # Extract final answer from last assistant message
     predicted = ""
-    for msg in reversed(messages):
-        if msg["role"] == "assistant":
-            text = re.sub(r"<think>.*?</think>", "", msg["content"], flags=re.DOTALL)
-            text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL)
-            text = re.sub(r"<tool_call>.*", "", text, flags=re.DOTALL)
-            text = text.strip()
-            if text:
-                predicted = text
+    for msg_dict in reversed(messages):
+        if msg_dict["role"] == "assistant" and msg_dict.get("content"):
+            predicted = msg_dict["content"].strip()
+            if predicted:
                 break
 
     return {"predicted_answer": predicted, "num_steps": len(trajectory), "trajectory": trajectory}
@@ -858,7 +873,8 @@ async def async_main():
     print("[Smoke] Judge...", end=" ", flush=True)
     print(f"OK: {generate_judge('Count to 3.').strip()[:80]}")
     print("[Smoke] Test...", end=" ", flush=True)
-    print(f"OK: {generate_test_chat([{'role': 'user', 'content': 'Count to 3.'}], temperature=0, max_tokens=64).strip()[:80]}")
+    smoke_choice = generate_test_chat([{"role": "user", "content": "Count to 3."}], temperature=0, max_tokens=64)
+    print(f"OK: {(smoke_choice.message.content or '').strip()[:80]}")
     print()
 
     # Probe transports
