@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# APEX-Agents RL Training for Qwen3-8B
+# Trains on professional services tasks (banking, consulting, law) from APEX benchmark
+# Uses binary rubric-based reward matching benchmark grading methodology
+
 # for rerun the task
 pkill -9 sglang
 sleep 3
@@ -13,20 +17,15 @@ pkill -9 python
 set -ex
 
 export PYTHONBUFFERED=16
-export WANDB_KEY=${WANDB_KEY:-"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"}
+export WANDB_KEY=${WANDB_KEY:-""}
 
-# LLM Judge configuration (OpenRouter)
-export OPENAI_API_BASE=${OPENAI_API_BASE:-https://openrouter.ai/api/v1}
-export JUDGE_MODEL=${JUDGE_MODEL:-openai/gpt-4o-mini}
-export OPENAI_API_KEY="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"
+# LLM Judge configuration
+export OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
+export JUDGE_MODEL=${JUDGE_MODEL:-gpt-4o}
+export OPENAI_API_KEY=${OPENAI_API_KEY:-""}
 
-# SerpAPI MCP URL - supports two ways:
-# 1. Set SERPAPI_MCP_URL directly (full URL with token)
-# 2. Set SERPAPI_KEY (token only, URL will be constructed)
-if [ -z "${SERPAPI_MCP_URL}" ]; then
-    SERPAPI_KEY="41a3f9139c3db3ca3394902c5f1a05df5720bd76da9e9a2c9c05b9beeb737cf3"
-    SERPAPI_MCP_URL="https://mcp.serpapi.com/${SERPAPI_KEY}/mcp"
-fi
+# MCP Server URL — placeholder until Archipelago environment is available
+MCP_SERVER_URL=${MCP_SERVER_URL:-"https://mcp.archipelago.example.com/apex"}
 
 NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -37,38 +36,36 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-DATA_DIR="/root/eigenai_slime/slime/examples/mcp_agent"
+DATA_DIR="${SCRIPT_DIR}"
 MODEL_DIR="/root"
-source "${SCRIPT_DIR}/models/qwen3-8B.sh"
+source "${SCRIPT_DIR}/../models/qwen3-8B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_DIR}/Qwen3-8B
    --ref-load ${MODEL_DIR}/Qwen3-8B_torch_dist
-   --load ${MODEL_DIR}/Qwen3-8B_slime/
-   --save ${MODEL_DIR}/Qwen3-8B_slime/
+   --load ${MODEL_DIR}/Qwen3-8B_slime_apex/
+   --save ${MODEL_DIR}/Qwen3-8B_slime_apex/
    --save-interval 50
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data ${DATA_DIR}/sample_data.jsonl
+   --prompt-data ${DATA_DIR}/apex_train.jsonl
    --input-key messages
-   --rollout-shuffle
+   --label-key label
 
-   # MCP Agent configuration
+   # MCP Agent rollout
    --custom-generate-function-path slime.rollout.mcp_agent_rollout.generate_with_mcp
-   --mcp-server-url "${SERPAPI_MCP_URL}"
+   --mcp-server-url "${MCP_SERVER_URL}"
 
-   # LLM Judge reward model
-   --rm-type llm_judge
+   # APEX binary rubric reward model
+   --custom-rm-path slime.rollout.rm_hub.apex_reward.compute_apex_reward
 
+   # Conservative batch sizes (tasks are expensive, long-horizon)
    --num-rollout 100
-   --rollout-batch-size 8
+   --rollout-batch-size 4
    --n-samples-per-prompt 4
-   --rollout-max-response-len 4096
+   --rollout-max-response-len 8192
    --rollout-temperature 0.8
-
-   --over-sampling-batch-size 8
-   --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
 
    --global-batch-size 32
    --balance-data
@@ -110,7 +107,7 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    --use-wandb
    --wandb-project slime-dev
-   --wandb-group qwen3-8B-serpapi-mcp
+   --wandb-group qwen3-8B-apex-agents
    --wandb-key ${WANDB_KEY}
 )
 
