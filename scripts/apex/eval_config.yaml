@@ -1,0 +1,19 @@
+eval:
+  defaults:
+    max_response_len: 8192
+    temperature: 0.0
+    top_p: 1.0
+    n_samples_per_eval_prompt: 1
+
+  datasets:
+    - name: apex_vanilla
+      path: scripts/apex/apex_eval_vanilla.jsonl
+      input_key: messages
+      label_key: label
+      custom_generate_function_path: slime.rollout.apex_agent_rollout.apex_generate_with_mcp
+
+    - name: apex_plan_then_act
+      path: scripts/apex/apex_eval_plan_then_act.jsonl
+      input_key: messages
+      label_key: label
+      custom_generate_function_path: slime.rollout.apex_agent_rollout.apex_generate_with_mcp
