@@ -245,8 +245,8 @@ def _init_ray_distributed_post(args):
                 timeout=httpx.Timeout(None),
             )
 
-        async def do_post(self, url, payload, max_retries=60):
-            return await _post(self._client, url, payload, max_retries)
+        async def do_post(self, url, payload, max_retries=60, headers=None):
+            return await _post(self._client, url, payload, max_retries, headers=headers)
 
     # Create actors per node
     created = []
@@ -279,7 +279,7 @@ async def post(url, payload, max_retries=60, headers=None):
             actor = _next_actor()
             if actor is not None:
                 # Use a thread to avoid blocking the event loop on ray.get
-                obj_ref = actor.do_post.remote(url, payload, max_retries)
+                obj_ref = actor.do_post.remote(url, payload, max_retries, headers=headers)
                 return await asyncio.to_thread(ray.get, obj_ref)
         except Exception as e:
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
