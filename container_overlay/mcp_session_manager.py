@@ -239,17 +239,18 @@ class SessionContainer:
     # ── Snapshots ────────────────────────────────────────────────────────
 
     def snapshot_to_zip(self, output_path, session_id=None):
-        """Take a snapshot via POST /data/snapshot, convert tar.gz to ZIP.
+        """Take a snapshot and convert tar.gz to ZIP.
 
-        If session_id is provided, passes X-Session-Id header so the
-        snapshot is scoped to the session's directories.
+        If session_id is provided, uses /sessions/snapshot (session-scoped,
+        much smaller). Otherwise falls back to /data/snapshot (entire world).
         """
-        url = f"http://{self.host}:{self.port}/data/snapshot"
-        headers = {}
         if session_id:
-            headers["X-Session-Id"] = session_id
-
-        resp = requests.post(url, stream=True, timeout=SNAPSHOT_TIMEOUT, headers=headers)
+            url = f"http://{self.host}:{self.port}/sessions/snapshot"
+            resp = requests.post(url, json={"session_id": session_id},
+                                 stream=True, timeout=SNAPSHOT_TIMEOUT)
+        else:
+            url = f"http://{self.host}:{self.port}/data/snapshot"
+            resp = requests.post(url, stream=True, timeout=SNAPSHOT_TIMEOUT)
         resp.raise_for_status()
 
         tar_bytes = io.BytesIO()
@@ -272,13 +273,17 @@ class SessionContainer:
                         zf.writestr(arcname, f.read())
 
     def snapshot_to_targz(self, output_path, session_id=None):
-        """Take a snapshot via POST /data/snapshot, save raw tar.gz."""
-        url = f"http://{self.host}:{self.port}/data/snapshot"
-        headers = {}
-        if session_id:
-            headers["X-Session-Id"] = session_id
+        """Take a snapshot, save raw tar.gz.
 
-        resp = requests.post(url, stream=True, timeout=SNAPSHOT_TIMEOUT, headers=headers)
+        If session_id is provided, uses /sessions/snapshot (session-scoped).
+        """
+        if session_id:
+            url = f"http://{self.host}:{self.port}/sessions/snapshot"
+            resp = requests.post(url, json={"session_id": session_id},
+                                 stream=True, timeout=SNAPSHOT_TIMEOUT)
+        else:
+            url = f"http://{self.host}:{self.port}/data/snapshot"
+            resp = requests.post(url, stream=True, timeout=SNAPSHOT_TIMEOUT)
         resp.raise_for_status()
         with open(output_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=65536):

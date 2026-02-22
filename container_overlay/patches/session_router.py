@@ -8,14 +8,18 @@ Endpoints:
     POST /sessions/create   — create a new session
     POST /sessions/destroy  — destroy an existing session
     POST /sessions/list     — list active sessions
+    POST /sessions/snapshot — stream session-scoped tar.gz snapshot
 """
 
+import io
 import os
 import shutil
 import subprocess
+import tarfile
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -42,6 +46,10 @@ class DestroySessionRequest(BaseModel):
 class DestroySessionResult(BaseModel):
     session_id: str
     cleaned: bool
+
+
+class SnapshotSessionRequest(BaseModel):
+    session_id: str = Field(..., description="Session to snapshot")
 
 
 class ListSessionsResult(BaseModel):
@@ -186,3 +194,60 @@ async def list_sessions() -> ListSessionsResult:
         if os.path.isdir(base):
             sessions.update(os.listdir(base))
     return ListSessionsResult(sessions=sorted(sessions))
+
+
+@router.post("/snapshot")
+async def snapshot_session(request: SnapshotSessionRequest):
+    """Stream a tar.gz snapshot of a single session's directories.
+
+    Only includes /filesystem/sessions/{sid}/ and /.apps_data/sessions/{sid}/,
+    NOT the entire world. Much faster than /data/snapshot for session-scoped use.
+    """
+    sid = request.session_id
+    session_fs = os.path.join(SESSIONS_FS, sid)
+    session_apps = os.path.join(SESSIONS_APPS, sid)
+
+    if not os.path.isdir(session_fs) and not os.path.isdir(session_apps):
+        raise HTTPException(status_code=404, detail=f"Session {sid} not found")
+
+    logger.info(f"Snapshot session {sid}")
+
+    def _generate_tar_gz():
+        """Yield tar.gz chunks for streaming response."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for base_dir, arcname_prefix in [
+                (session_fs, "filesystem"),
+                (session_apps, ".apps_data"),
+            ]:
+                if not os.path.isdir(base_dir):
+                    continue
+                for root, dirs, files in os.walk(base_dir):
+                    for fname in files:
+                        fpath = os.path.join(root, fname)
+                        arcname = os.path.join(
+                            arcname_prefix,
+                            os.path.relpath(fpath, base_dir),
+                        )
+                        try:
+                            tf.add(fpath, arcname=arcname)
+                        except (PermissionError, FileNotFoundError):
+                            continue
+                        # Flush accumulated data
+                        if buf.tell() > 65536:
+                            buf.seek(0)
+                            data = buf.read()
+                            buf.seek(0)
+                            buf.truncate()
+                            yield data
+            # tarfile close writes footer
+        buf.seek(0)
+        remaining = buf.read()
+        if remaining:
+            yield remaining
+
+    return StreamingResponse(
+        _generate_tar_gz(),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f"attachment; filename=session_{sid}.tar.gz"},
+    )

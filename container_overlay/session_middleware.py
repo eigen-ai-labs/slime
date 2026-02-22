@@ -20,6 +20,11 @@ class SessionMiddleware:
     def __init__(self, app):
         self.app = app
 
+    def __getattr__(self, name):
+        # Proxy attribute access (e.g. .state, .routes) to the wrapped app
+        # so FastMCP's run_http_async can access app.state.path etc.
+        return getattr(self.app, name)
+
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket"):
             sid = None

@@ -72,6 +72,55 @@ def resolve_under_root(
     return resolved_path
 
 
+def resolve_file_under_root(
+    path: str,
+    *,
+    root: str | None = None,
+    check_exists: bool = False,
+) -> str:
+    """Resolve a file path under the sandbox root."""
+    return resolve_under_root(
+        path,
+        root=root,
+        check_exists=check_exists,
+        must_be_file=check_exists,
+    )
+
+
+def resolve_dir_under_root(
+    path: str,
+    *,
+    root: str | None = None,
+    check_exists: bool = False,
+) -> str:
+    """Resolve a directory path under the sandbox root."""
+    return resolve_under_root(
+        path,
+        root=root,
+        check_exists=check_exists,
+        must_be_dir=check_exists,
+    )
+
+
+def resolve_new_file_path(
+    directory: str,
+    filename: str,
+    *,
+    root: str | None = None,
+) -> str:
+    """Resolve a path for a new file to be created within the sandbox."""
+    if os.sep in filename or (os.altsep and os.altsep in filename):
+        raise ValueError(f"Filename cannot contain path separators: {filename}")
+
+    directory = directory.strip("/")
+    if directory:
+        path = f"{directory}/{filename}"
+    else:
+        path = filename
+
+    return resolve_under_root(path, root=root)
+
+
 def is_path_within_sandbox(path: str, root: str | None = None) -> bool:
     """Check if a path is within the sandbox without raising exceptions."""
     try:
