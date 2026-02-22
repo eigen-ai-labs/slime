@@ -47,6 +47,9 @@ class MCPClientConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
 
+    # HTTP headers (e.g., for X-Session-Id)
+    headers: dict[str, str] = field(default_factory=dict)
+
     # Common config
     concurrency_limit: int = 16
     timeout: float = 30.0

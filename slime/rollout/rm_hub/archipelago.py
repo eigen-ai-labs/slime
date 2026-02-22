@@ -170,13 +170,15 @@ def _run_grading_cli(task_id, initial_snapshot, final_snapshot, grading_inputs,
 
 async def compute_archipelago_reward(
     args: Any,
-    sample: Sample,
+    samples: Sample | list[Sample],
     **kwargs,
-) -> float:
-    """Compute reward for a single sample using Archipelago grading.
+) -> float | list[float]:
+    """Compute reward using Archipelago grading.
 
     Invoked by slime's reward model dispatcher via:
         --custom-rm-path slime.rollout.rm_hub.archipelago.compute_archipelago_reward
+
+    Accepts both single Sample (from async_rm) and list[Sample] (from batched_async_rm).
 
     Reads from sample.metadata:
         - initial_snapshot: path to initial state ZIP
@@ -185,8 +187,23 @@ async def compute_archipelago_reward(
         - task_id, world_id: identifiers
 
     Returns:
-        float score in [0, 1]
+        float score in [0, 1] (single) or list[float] (batch)
     """
+    # Handle batch mode: batched_async_rm passes list[Sample]
+    if isinstance(samples, list):
+        tasks = [_compute_single_reward(args, s, **kwargs) for s in samples]
+        return await asyncio.gather(*tasks)
+
+    # Single sample mode: async_rm passes a single Sample
+    return await _compute_single_reward(args, samples, **kwargs)
+
+
+async def _compute_single_reward(
+    args: Any,
+    sample: Sample,
+    **kwargs,
+) -> float:
+    """Compute reward for a single sample."""
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
 
     initial_snapshot = metadata.get("initial_snapshot")

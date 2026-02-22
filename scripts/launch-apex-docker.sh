@@ -33,6 +33,7 @@ echo "SCRIPT_DIR: ${SCRIPT_DIR}"
 export APEX_POOL_SIZE="${APEX_POOL_SIZE:-1}"
 export APEX_BASE_PORT="${APEX_BASE_PORT:-9000}"
 export APEX_DOCKER_CMD="${APEX_DOCKER_CMD:-docker}"
+export APEX_SESSION_CONCURRENCY="${APEX_SESSION_CONCURRENCY:-4}"
 
 # Archipelago grading
 export APEX_JUDGE_MODEL="${APEX_JUDGE_MODEL:-openai/google/gemini-3-flash-preview}"
@@ -48,7 +49,7 @@ export APEX_TRAIN_DATA="${APEX_TRAIN_DATA:-/data/mingye_b200-1/slime/examples/mc
 
 # ── Optional overrides ───────────────────────────────────────────────────────
 
-APEX_ROLLOUT_BATCH_SIZE="${APEX_ROLLOUT_BATCH_SIZE:-4}"
+APEX_ROLLOUT_BATCH_SIZE="${APEX_ROLLOUT_BATCH_SIZE:-32}"
 APEX_N_SAMPLES="${APEX_N_SAMPLES:-2}"
 SLIME_IMAGE="${SLIME_IMAGE:-slimerl/slime:latest}"
 
@@ -80,7 +81,7 @@ echo "  APEX_TRAIN_DATA=${APEX_TRAIN_DATA}"
 echo ""
 
 exec sudo docker run --gpus all --ipc=host --shm-size=16g \
-    --ulimit memlock=-1 --ulimit stack=67108864 \
+    --ulimit memlock=-1 --ulimit stack=67108864 --ulimit nofile=1048576:1048576 \
     --network host \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /usr/bin/docker:/usr/bin/docker \
@@ -94,6 +95,7 @@ exec sudo docker run --gpus all --ipc=host --shm-size=16g \
     -e APEX_JUDGE_API_KEY="${APEX_JUDGE_API_KEY}" \
     -e APEX_GRADING_DIR="${APEX_GRADING_DIR}" \
     -e APEX_TRAIN_DATA="${APEX_TRAIN_DATA}" \
+    -e APEX_SESSION_CONCURRENCY="${APEX_SESSION_CONCURRENCY}" \
     -e APEX_ROLLOUT_BATCH_SIZE="${APEX_ROLLOUT_BATCH_SIZE}" \
     -e APEX_N_SAMPLES="${APEX_N_SAMPLES}" \
     -e WANDB_KEY="${WANDB_KEY}" \

@@ -9,6 +9,7 @@ pkill -9 python
 sleep 3
 pkill -9 ray
 pkill -9 python
+rm -rf /tmp/ray
 
 set -ex
 
@@ -76,13 +77,14 @@ ROLLOUT_ARGS=(
    --num-rollout 100
    # rollout-batch-size should be <= total containers across all worlds
    # Each sample needs a container for the duration of its rollout
-   --rollout-batch-size ${APEX_ROLLOUT_BATCH_SIZE:-4}
+   # With POOL_SIZE=8 and ~4 worlds per batch: 4*8=32 concurrent containers
+   --rollout-batch-size ${APEX_ROLLOUT_BATCH_SIZE:-32}
    # Fewer samples per prompt due to slow Docker rollouts
    --n-samples-per-prompt ${APEX_N_SAMPLES:-2}
    --rollout-max-response-len 4096
    --rollout-temperature 0.8
 
-   --over-sampling-batch-size ${APEX_ROLLOUT_BATCH_SIZE:-4}
+   --over-sampling-batch-size ${APEX_ROLLOUT_BATCH_SIZE:-32}
    --dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
 
    --global-batch-size 32
@@ -146,6 +148,8 @@ MISC_ARGS=(
 # ── Launch ───────────────────────────────────────────────────────────────────
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
+ray stop --force 2>/dev/null || true
+rm -rf /tmp/ray/
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --port 6381 --dashboard-port 8267 --dashboard-agent-listen-port 52400
 
 sleep 5
@@ -164,7 +168,8 @@ RUNTIME_ENV_JSON="{
     \"APEX_JUDGE_MODEL\": \"${APEX_JUDGE_MODEL}\",
     \"APEX_JUDGE_API_BASE\": \"${APEX_JUDGE_API_BASE}\",
     \"APEX_JUDGE_API_KEY\": \"${APEX_JUDGE_API_KEY}\",
-    \"APEX_GRADING_DIR\": \"${APEX_GRADING_DIR}\"
+    \"APEX_GRADING_DIR\": \"${APEX_GRADING_DIR}\",
+    \"APEX_SESSION_CONCURRENCY\": \"${APEX_SESSION_CONCURRENCY:-4}\"
   }
 }"
 
@@ -192,5 +197,15 @@ echo "${SUBMIT_OUTPUT}"
 JOB_ID=$(echo "${SUBMIT_OUTPUT}" | grep -oP 'raysubmit_\w+' | head -1)
 echo "Submitted job: ${JOB_ID}"
 
-# Follow logs and block until job completes
-ray job logs "${JOB_ID}" --address="${RAY_ADDRESS}" --follow
+# Poll job status until completion (keeps container alive)
+while true; do
+    STATUS=$(ray job status "${JOB_ID}" --address="${RAY_ADDRESS}" 2>&1)
+    if echo "${STATUS}" | grep -qiE "SUCCEEDED|FAILED|STOPPED"; then
+        echo "Job ${JOB_ID} finished:"
+        echo "${STATUS}"
+        # Print final logs
+        ray job logs "${JOB_ID}" --address="${RAY_ADDRESS}" 2>/dev/null | tail -50
+        break
+    fi
+    sleep 30
+done

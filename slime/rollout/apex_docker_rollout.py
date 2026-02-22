@@ -58,9 +58,11 @@ class PerContainerMCPState:
     MCPState. Each instance connects to a single container's MCP URL.
     """
 
-    def __init__(self, mcp_url: str, name: str = "apex-container"):
+    def __init__(self, mcp_url: str, name: str = "apex-container",
+                 headers: dict[str, str] | None = None):
         self._mcp_url = mcp_url
         self._name = name
+        self._headers = headers or {}
         self._client: MCPClient | None = None
         self._initialized = False
         self._lock = asyncio.Lock()
@@ -78,6 +80,7 @@ class PerContainerMCPState:
                 name=self._name,
                 transport=MCPTransport.STREAMABLE_HTTP,
                 url=self._mcp_url,
+                headers=self._headers,
                 concurrency_limit=16,
                 timeout=120.0,
             )
@@ -128,28 +131,35 @@ class PerContainerMCPState:
 class ManagedContainerPool:
     """Wraps ContainerPool with async container allocation.
 
-    Each world gets one ManagedContainerPool. Containers are allocated via
-    acquire/release with per-container asyncio.Lock for thread safety.
+    Each world gets one ManagedContainerPool. Multiple sessions can run
+    concurrently on each container (controlled by APEX_SESSION_CONCURRENCY).
     """
 
     def __init__(self, world_id: str, docker_dir: str, pool_size: int,
-                 base_port: int, docker_cmd: str = "docker"):
+                 base_port: int, docker_cmd: str = "docker",
+                 session_concurrency: int = 4):
         self.world_id = world_id
         self.docker_dir = docker_dir
         self.pool_size = pool_size
         self.base_port = base_port
         self.docker_cmd = docker_cmd
+        self.session_concurrency = session_concurrency
 
         self._pool = None  # ContainerPool, created in start()
-        self._locks: list[asyncio.Lock] = []
+        self._semas: list[asyncio.Semaphore] = []
         self._started = False
+        self._start_lock = asyncio.Lock()  # Prevents concurrent start() calls
         self._next_idx = 0  # round-robin counter
 
     async def start(self) -> None:
         """Load Docker image, extract env, and start the container pool."""
-        if self._started:
-            return
+        async with self._start_lock:
+            if self._started:
+                return
+            await self._start_unlocked()
 
+    async def _start_unlocked(self) -> None:
+        """Internal start logic, must be called under self._start_lock."""
         # Import from mcp_session_manager (must be on PYTHONPATH)
         from mcp_session_manager import ContainerPool
 
@@ -161,7 +171,19 @@ class ManagedContainerPool:
 
         # Load Docker image
         image_tag = await asyncio.to_thread(load_docker_image, self.docker_dir)
-        logger.info("Loaded Docker image: %s", image_tag)
+        # Use multi-session overlay image if available (canonical-ms:xxx)
+        ms_tag = image_tag.replace("canonical-delivery:", "canonical-ms:", 1)
+        if ms_tag != image_tag:
+            import subprocess as _sp
+            check = _sp.run(["docker", "image", "inspect", ms_tag],
+                            capture_output=True, timeout=10)
+            if check.returncode == 0:
+                logger.info("Using multi-session image: %s (base: %s)", ms_tag, image_tag)
+                image_tag = ms_tag
+            else:
+                logger.info("Multi-session image not found, using base: %s", image_tag)
+        else:
+            logger.info("Loaded Docker image: %s", image_tag)
 
         # Extract .env file
         env_file = await asyncio.to_thread(extract_env_file, self.docker_dir)
@@ -183,8 +205,9 @@ class ManagedContainerPool:
         )
         await asyncio.to_thread(self._pool.start, True)
 
-        # Create per-container locks
-        self._locks = [asyncio.Lock() for _ in range(self.pool_size)]
+        # Create per-container semaphores (allow N concurrent sessions each)
+        self._semas = [asyncio.Semaphore(self.session_concurrency)
+                       for _ in range(self.pool_size)]
         self._started = True
 
         logger.info("Container pool for world %s ready (%d containers)",
@@ -201,7 +224,10 @@ class ManagedContainerPool:
             logger.info("Container pool for world %s stopped", self.world_id)
 
     async def acquire(self) -> tuple[int, Any]:
-        """Acquire a container from the pool (round-robin + lock).
+        """Acquire a slot on a container from the pool.
+
+        Uses round-robin across containers. Each container allows up to
+        session_concurrency concurrent sessions via Semaphore.
 
         Returns (container_index, container) tuple.
         The caller MUST call release(idx) when done.
@@ -209,19 +235,17 @@ class ManagedContainerPool:
         if not self._started:
             await self.start()
 
-        # Round-robin selection
+        # Round-robin: pick next container and wait for a semaphore slot
         idx = self._next_idx % self.pool_size
         self._next_idx += 1
-
-        # Wait for lock on this container
-        await self._locks[idx].acquire()
+        await self._semas[idx].acquire()
         container = self._pool.get(idx)
         return idx, container
 
     def release(self, idx: int) -> None:
-        """Release a container back to the pool."""
-        if idx < len(self._locks) and self._locks[idx].locked():
-            self._locks[idx].release()
+        """Release a session slot back to the container."""
+        if idx < len(self._semas):
+            self._semas[idx].release()
 
 
 # ── Pool Registry (module-level, per world) ──────────────────────────────────
@@ -254,6 +278,7 @@ async def _get_or_create_pool(world_id: str, docker_dir: str) -> ManagedContaine
 
         pool_size = int(os.environ.get("APEX_POOL_SIZE", "1"))
         docker_cmd = os.environ.get("APEX_DOCKER_CMD", "docker")
+        session_concurrency = int(os.environ.get("APEX_SESSION_CONCURRENCY", "4"))
 
         pool = ManagedContainerPool(
             world_id=world_id,
@@ -261,6 +286,7 @@ async def _get_or_create_pool(world_id: str, docker_dir: str) -> ManagedContaine
             pool_size=pool_size,
             base_port=_port_counter,
             docker_cmd=docker_cmd,
+            session_concurrency=session_concurrency,
         )
 
         # Reserve ports for this pool
@@ -312,9 +338,8 @@ async def generate_with_apex_docker(
     # Get or create container pool for this world
     pool = await _get_or_create_pool(world_id, docker_dir)
 
-    # Ensure pool is started
-    if not pool._started:
-        await pool.start()
+    # Ensure pool is started (start() is idempotent and properly locked)
+    await pool.start()
 
     # Acquire a container
     container_idx, container = await pool.acquire()
@@ -337,14 +362,18 @@ async def generate_with_apex_docker(
             await asyncio.to_thread(container.ensure_running, task_slug)
             session = await asyncio.to_thread(container.create_session, task_slug)
 
-        # Take initial snapshot
+        # Take initial snapshot (scoped to this session's directories)
         initial_snap = tempfile.mktemp(suffix=".zip", prefix=f"snap_init_{task_id}_")
-        await asyncio.to_thread(container.snapshot_to_zip, initial_snap)
+        await asyncio.to_thread(container.snapshot_to_zip, initial_snap,
+                                session_id=session.session_id)
 
         # Create per-container MCP state (non-singleton)
+        # Pass X-Session-Id header so MCP servers route to the session's directories
+        session_headers = getattr(container, 'mcp_headers_for', lambda s: {})(session.session_id)
         mcp_state = PerContainerMCPState(
             mcp_url=container.mcp_url,
             name=f"apex-{world_id}-{container_idx}",
+            headers=session_headers,
         )
         await mcp_state.initialize()
 
@@ -382,12 +411,13 @@ async def generate_with_apex_docker(
         )
         elapsed = time.time() - t0
 
-        # Take final snapshot
+        # Take final snapshot (scoped to this session's directories)
         final_snap = tempfile.mktemp(suffix=".zip", prefix=f"snap_final_{task_id}_")
-        await asyncio.to_thread(container.snapshot_to_zip, final_snap)
+        await asyncio.to_thread(container.snapshot_to_zip, final_snap,
+                                session_id=session.session_id)
 
         # Destroy session (container stays alive for next rollout)
-        await asyncio.to_thread(container.destroy_session)
+        await asyncio.to_thread(container.destroy_session, session.session_id)
 
         if not samples:
             sample.status = Sample.Status.FAILED

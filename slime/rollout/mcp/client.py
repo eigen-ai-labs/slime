@@ -102,7 +102,11 @@ class MCPClient:
 
         # Streamable HTTP client returns (read_stream, write_stream, get_session_id)
         http_transport = await self._exit_stack.enter_async_context(
-            streamablehttp_client(self.config.url, timeout=self.config.timeout)
+            streamablehttp_client(
+                self.config.url,
+                headers=self.config.headers or None,
+                timeout=self.config.timeout,
+            )
         )
         read_stream, write_stream, _ = http_transport
 
