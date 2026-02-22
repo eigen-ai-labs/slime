@@ -73,14 +73,16 @@ class SessionContainer:
     servers route to the correct session's data directory.
     """
 
-    def __init__(self, image_tag, env_file, port, docker_cmd="docker"):
+    def __init__(self, image_tag, env_file, port, docker_cmd="docker",
+                 host="localhost"):
         self.image_tag = image_tag
         self.env_file = env_file
         self.port = port
         self.docker_cmd = docker_cmd
+        self.host = host
         self.container_id = None
         self.task_slug = None
-        self._base_mcp_url = f"http://localhost:{port}/mcp/"
+        self._base_mcp_url = f"http://{host}:{port}/mcp/"
         self._tools_cache = None
         self._active_sessions: dict[str, Session] = {}
 
@@ -196,7 +198,7 @@ class SessionContainer:
         effective_slug = task_slug or self.task_slug
         sid = session_id or f"s_{uuid.uuid4().hex[:12]}"
 
-        url = f"http://localhost:{self.port}/sessions/create"
+        url = f"http://{self.host}:{self.port}/sessions/create"
         payload = {"session_id": sid, "task_slug": effective_slug}
 
         resp = requests.post(url, json=payload, timeout=SESSION_CREATE_TIMEOUT)
@@ -224,7 +226,7 @@ class SessionContainer:
             else:
                 return
 
-        url = f"http://localhost:{self.port}/sessions/destroy"
+        url = f"http://{self.host}:{self.port}/sessions/destroy"
         try:
             requests.post(
                 url, json={"session_id": session_id}, timeout=30,
@@ -242,7 +244,7 @@ class SessionContainer:
         If session_id is provided, passes X-Session-Id header so the
         snapshot is scoped to the session's directories.
         """
-        url = f"http://localhost:{self.port}/data/snapshot"
+        url = f"http://{self.host}:{self.port}/data/snapshot"
         headers = {}
         if session_id:
             headers["X-Session-Id"] = session_id
@@ -271,7 +273,7 @@ class SessionContainer:
 
     def snapshot_to_targz(self, output_path, session_id=None):
         """Take a snapshot via POST /data/snapshot, save raw tar.gz."""
-        url = f"http://localhost:{self.port}/data/snapshot"
+        url = f"http://{self.host}:{self.port}/data/snapshot"
         headers = {}
         if session_id:
             headers["X-Session-Id"] = session_id
@@ -343,7 +345,7 @@ class SessionContainer:
 
     def _wait_for_health(self, timeout=CONTAINER_STARTUP_TIMEOUT):
         """Wait for /health to respond."""
-        url = f"http://localhost:{self.port}/health"
+        url = f"http://{self.host}:{self.port}/health"
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -380,11 +382,12 @@ class ContainerPool:
     """
 
     def __init__(self, image_tag, env_file, initial_task_slug, base_port, size,
-                 docker_cmd="docker"):
+                 docker_cmd="docker", host="localhost"):
         self.initial_task_slug = initial_task_slug
         self.size = size
         self.containers = [
-            SessionContainer(image_tag, env_file, base_port + i, docker_cmd)
+            SessionContainer(image_tag, env_file, base_port + i, docker_cmd,
+                             host=host)
             for i in range(size)
         ]
         self._started = False

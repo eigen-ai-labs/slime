@@ -248,9 +248,96 @@ class ManagedContainerPool:
             self._semas[idx].release()
 
 
+# ── RemoteManagedPool (connect to pre-started containers on remote host) ─────
+
+class RemoteManagedPool:
+    """Connects to pre-started containers on a remote MCP host.
+
+    Unlike ManagedContainerPool, this does NOT start/stop containers.
+    It only wraps SessionContainer objects in connect-only mode for
+    session creation, tool calls, and snapshots.
+    """
+
+    def __init__(self, world_id: str, host: str, port: int,
+                 session_concurrency: int = 4):
+        self.world_id = world_id
+        self.host = host
+        self.port = port
+        self.session_concurrency = session_concurrency
+
+        self._container = None
+        self._sema = asyncio.Semaphore(session_concurrency)
+        self._started = False
+        self._start_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """Create a SessionContainer wrapper (no docker run, just connect)."""
+        async with self._start_lock:
+            if self._started:
+                return
+            from mcp_session_manager import SessionContainer
+
+            # Create container wrapper in connect-only mode:
+            # no image_tag/env_file needed, container already running
+            self._container = SessionContainer(
+                image_tag="remote",
+                env_file="/dev/null",
+                port=self.port,
+                host=self.host,
+            )
+            # Set container_id to a placeholder so is_running checks pass
+            self._container.container_id = f"remote-{self.host}-{self.port}"
+
+            # Wait for health
+            logger.info("Waiting for remote MCP at %s:%d ...", self.host, self.port)
+            await asyncio.to_thread(self._container._wait_for_health, 120)
+            self._started = True
+            logger.info("Remote MCP pool for world %s ready at %s:%d",
+                        self.world_id, self.host, self.port)
+
+    def stop(self) -> None:
+        """No-op: remote containers are managed externally."""
+        pass
+
+    async def acquire(self) -> tuple[int, any]:
+        """Acquire a session slot. Returns (0, container)."""
+        if not self._started:
+            await self.start()
+        await self._sema.acquire()
+        return 0, self._container
+
+    def release(self, idx: int) -> None:
+        """Release a session slot."""
+        self._sema.release()
+
+
+# ── Port Map for Remote Mode ─────────────────────────────────────────────────
+
+_port_map_cache: dict[str, int] | None = None
+
+
+def _load_port_map() -> dict[str, int]:
+    """Load world_id → port mapping from JSON file."""
+    global _port_map_cache
+    if _port_map_cache is not None:
+        return _port_map_cache
+
+    import json
+    port_map_path = os.environ.get("APEX_MCP_PORT_MAP", "")
+    if not port_map_path:
+        raise RuntimeError(
+            "APEX_MCP_HOST is set but APEX_MCP_PORT_MAP is not. "
+            "Set APEX_MCP_PORT_MAP to a JSON file mapping world_id → port."
+        )
+    with open(port_map_path) as f:
+        _port_map_cache = json.load(f)
+    logger.info("Loaded port map with %d worlds from %s", len(_port_map_cache), port_map_path)
+    return _port_map_cache
+
+
 # ── Pool Registry (module-level, per world) ──────────────────────────────────
 
-_pool_registry: dict[str, ManagedContainerPool] = {}
+_pool_registry: dict[str, ManagedContainerPool | RemoteManagedPool] = {}
 _registry_lock = asyncio.Lock()
 _port_counter = int(os.environ.get("APEX_BASE_PORT", "9000"))
 
@@ -268,29 +355,53 @@ def _cleanup_all_pools():
 atexit.register(_cleanup_all_pools)
 
 
-async def _get_or_create_pool(world_id: str, docker_dir: str) -> ManagedContainerPool:
-    """Get or create a ManagedContainerPool for a world."""
+async def _get_or_create_pool(world_id: str, docker_dir: str) -> ManagedContainerPool | RemoteManagedPool:
+    """Get or create a pool for a world.
+
+    If APEX_MCP_HOST is set, creates a RemoteManagedPool that connects to
+    pre-started containers on the remote host. Otherwise, creates a
+    ManagedContainerPool that starts containers locally.
+    """
     global _port_counter
 
     async with _registry_lock:
         if world_id in _pool_registry:
             return _pool_registry[world_id]
 
-        pool_size = int(os.environ.get("APEX_POOL_SIZE", "1"))
-        docker_cmd = os.environ.get("APEX_DOCKER_CMD", "docker")
+        mcp_host = os.environ.get("APEX_MCP_HOST", "")
         session_concurrency = int(os.environ.get("APEX_SESSION_CONCURRENCY", "4"))
 
-        pool = ManagedContainerPool(
-            world_id=world_id,
-            docker_dir=docker_dir,
-            pool_size=pool_size,
-            base_port=_port_counter,
-            docker_cmd=docker_cmd,
-            session_concurrency=session_concurrency,
-        )
+        if mcp_host:
+            # Remote mode: connect to pre-started container
+            port_map = _load_port_map()
+            if world_id not in port_map:
+                raise RuntimeError(
+                    f"World {world_id} not found in port map. "
+                    f"Available worlds: {list(port_map.keys())[:5]}..."
+                )
+            port = port_map[world_id]
+            pool = RemoteManagedPool(
+                world_id=world_id,
+                host=mcp_host,
+                port=port,
+                session_concurrency=session_concurrency,
+            )
+            logger.info("Created remote pool for world %s → %s:%d", world_id, mcp_host, port)
+        else:
+            # Local mode: start containers on this node
+            pool_size = int(os.environ.get("APEX_POOL_SIZE", "1"))
+            docker_cmd = os.environ.get("APEX_DOCKER_CMD", "docker")
 
-        # Reserve ports for this pool
-        _port_counter += pool_size
+            pool = ManagedContainerPool(
+                world_id=world_id,
+                docker_dir=docker_dir,
+                pool_size=pool_size,
+                base_port=_port_counter,
+                docker_cmd=docker_cmd,
+                session_concurrency=session_concurrency,
+            )
+            # Reserve ports for this pool
+            _port_counter += pool_size
 
         _pool_registry[world_id] = pool
         return pool
@@ -347,9 +458,12 @@ async def generate_with_apex_docker(
     initial_snap = None
     final_snap = None
 
+    is_remote = isinstance(pool, RemoteManagedPool)
+
     try:
-        # Ensure container is alive
-        await asyncio.to_thread(container.ensure_running, task_slug)
+        # Ensure container is alive (skip for remote — managed externally)
+        if not is_remote:
+            await asyncio.to_thread(container.ensure_running, task_slug)
 
         # Create session — resets filesystem to clean task state (~5s)
         logger.info("Creating session for %s on container %d (port %d)",
@@ -357,6 +471,8 @@ async def generate_with_apex_docker(
         try:
             session = await asyncio.to_thread(container.create_session, task_slug)
         except RuntimeError:
+            if is_remote:
+                raise  # Can't restart remote containers
             # Retry: restart container, then retry create_session
             logger.warning("Session reset failed for %s, restarting container...", task_slug)
             await asyncio.to_thread(container.ensure_running, task_slug)

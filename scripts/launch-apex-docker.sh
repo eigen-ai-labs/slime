@@ -35,6 +35,10 @@ export APEX_BASE_PORT="${APEX_BASE_PORT:-9000}"
 export APEX_DOCKER_CMD="${APEX_DOCKER_CMD:-docker}"
 export APEX_SESSION_CONCURRENCY="${APEX_SESSION_CONCURRENCY:-4}"
 
+# Remote MCP node (optional — leave empty for local container mode)
+export APEX_MCP_HOST="${APEX_MCP_HOST:-}"
+export APEX_MCP_PORT_MAP="${APEX_MCP_PORT_MAP:-}"
+
 # Archipelago grading
 export APEX_JUDGE_MODEL="${APEX_JUDGE_MODEL:-openai/google/gemini-3-flash-preview}"
 export APEX_JUDGE_API_BASE="${APEX_JUDGE_API_BASE:-https://api.gmi-serving.com/v1}"
@@ -96,6 +100,8 @@ exec sudo docker run --gpus all --ipc=host --shm-size=16g \
     -e APEX_GRADING_DIR="${APEX_GRADING_DIR}" \
     -e APEX_TRAIN_DATA="${APEX_TRAIN_DATA}" \
     -e APEX_SESSION_CONCURRENCY="${APEX_SESSION_CONCURRENCY}" \
+    -e APEX_MCP_HOST="${APEX_MCP_HOST}" \
+    -e APEX_MCP_PORT_MAP="${APEX_MCP_PORT_MAP}" \
     -e APEX_ROLLOUT_BATCH_SIZE="${APEX_ROLLOUT_BATCH_SIZE}" \
     -e APEX_N_SAMPLES="${APEX_N_SAMPLES}" \
     -e WANDB_KEY="${WANDB_KEY}" \
